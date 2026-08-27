@@ -1,0 +1,41 @@
+; ─────────────────────────────────────────────────────────────────────────────
+; A line of assemblers fed by one belt and unloading onto another.
+;
+;   y 0     output belt          →
+;   y 1     inserters            machine → belt
+;   y 2..4  assembling machine 3
+;   y 5     inserters            belt → machine
+;   y 6     input belt           →
+;
+; A block writes itself from (0, 0). Where that origin lands is the caller's business,
+; so nothing inside ever does coordinate arithmetic against the outside world.
+; ─────────────────────────────────────────────────────────────────────────────
+
+; Module-wide settings. Any slot left blank below picks these up.
+defaults (tier blue)
+
+def prod-3 = repeat (4, (productivity-module-3, legendary))
+
+defblock cell (recipe r, module[] m = ()) => {
+  belt (from (0, 0) to (2, 0))              ; tier comes from defaults
+  bulk-inserter (at (1, 1), north)          ; dir is where it DROPS — onto the output belt
+  assembling-machine-3 (at (0, 2), recipe r, modules m)
+  bulk-inserter (at (1, 5), from south)     ; from is where it PICKS UP — the input belt
+  belt (from (0, 6) to (2, 6))
+}
+
+; A parameter answers to its own name and to its type, so `recipe` reaches `r`.
+defblock line (int n, recipe r, module[] m = ()) => {
+  ; `for` on its own only repeats — it does not position anything. `row` measures what each
+  ; pass emitted and packs it against the previous one, which is why the two go together.
+  row for i in 0..n => { cell (recipe r, modules m) }
+}
+
+line (at (0, 0), n 8, recipe iron-gear-wheel, modules prod-3)
+
+; Power. A medium pole's 9 tiles are how far it throws a *wire*; it only powers 7×7, which
+; from row 7 would never reach the inserters on row 1. A substation powers 18×18, so two of
+; them cover the whole line — switch on the power overlay to see it.
+for i in 0..2 => {
+  substation (at (1 + i * 14, 7))
+}

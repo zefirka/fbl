@@ -1,0 +1,63 @@
+; ─────────────────────────────────────────────────────────────────────────────
+; A smelting array: blocks made of blocks made of blocks.
+;
+;   x 0      output belt          ↑
+;   x 1      output inserters     furnace → belt
+;   x 2..4   furnaces
+;   x 5      input inserters      belt → furnace
+;   x 6      input belt           ↑   (tunnels under the substation)
+;   x 7      input inserters      belt → furnace
+;   x 8..10  furnaces
+;   x 11     output inserters     furnace → belt
+;   x 12     output belt          ↑
+; ─────────────────────────────────────────────────────────────────────────────
+
+; Naming a parameter after the slot its type fills lets callers write the value bare,
+; exactly as they would on an entity: `output-inserters (right)`, not `(d right)`.
+defblock output-inserters (direction dir = left) => {
+  column (gap 4) for pair in 0..3 => {
+    column => {
+      stack-inserter (dir)
+      stack-inserter (dir)
+    }
+  }
+}
+
+defblock input-inserters (direction dir = left) => {
+  ; One per furnace row. The rows are 3 tall, so these are not evenly spaced.
+  bulk-inserter (at (0, 0), dir)
+  bulk-inserter (at (0, 1), dir)
+  bulk-inserter (at (0, 4), dir)
+  bulk-inserter (at (0, 9), dir)
+  bulk-inserter (at (0, 12), dir)
+  bulk-inserter (at (0, 13), dir)
+}
+
+defblock smelters-block (tier t = green, module[] m = ()) => {
+  belt (from (0, 0) to (0, 17), t)
+  belt (from (12, 0) to (12, 17), t)
+
+  output-inserters (at (1, 2))
+  output-inserters (at (11, 2), right)
+
+  input-inserters (at (5, 2))
+  input-inserters (at (7, 2), right)
+
+  at (2, 0) => {
+    column for row in 0..6 => {
+      row (gap 3) for column in 0..2 => { electric-furnace (modules m) }
+    }
+  }
+
+  ; One substation covers 18×18, which is the whole block — switch on the power overlay.
+  substation (at (5, 8))
+
+  ; The middle belt runs straight through where the substation stands, so it tunnels.
+  ; `auto` only sees what was placed before it, which is why this line comes last.
+  belt (from (6, 0) to (6, 17), auto, t)
+}
+
+; Stacked, the belts of one block meet the belts of the next: each is exactly 18 tall.
+column for i in 0..3 => {
+  smelters-block ()
+}

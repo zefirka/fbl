@@ -1,0 +1,53 @@
+; ─────────────────────────────────────────────────────────────────────────────
+; Blocks, layout and buildings as parameters.
+; ─────────────────────────────────────────────────────────────────────────────
+
+; `for` repeats; it does not position. Eight calls with no `at` land on the same tile.
+; `row` and `column` measure what each pass emitted and pack it against the previous one,
+; which is what `row for` folds into a single line.
+defblock grid (int cols, int rows) => {
+  column for y in 0..rows => {
+    row for x in 0..cols => { steel-chest (at (0, 0)) }
+  }
+}
+
+grid (at (0, 0), cols 6, rows 4)
+
+; `at` shifts the frame for everything inside it.
+at (8, 0) => {
+  column (gap 1) => {
+    passive-provider-chest (at (0, 0))
+    requester-chest (at (0, 0))
+    buffer-chest (at (0, 0))
+  }
+}
+
+; ── Buildings as parameters ──────────────────────────────────────────────────
+; An `entity` parameter holds anything placeable — a machine or another block — so one
+; block covers a whole family. The checker cannot know which machine arrives, so it checks
+; the slot names against every entity's and leaves the rest to run time.
+
+defblock smelter (entity machine, module[] mods = ()) => {
+  machine (at (0, 0), modules mods)
+  belt (from (0, 3) to (2, 3), tier red)
+}
+
+; Three different machines, three different footprints; row packs them anyway.
+at (0, 7) => {
+  row (gap 1) => {
+    smelter (entity electric-furnace, modules (speed-module-3, speed-module-3))
+    smelter (entity steel-furnace)
+    smelter (entity stone-furnace)
+  }
+}
+
+; ── measure ──────────────────────────────────────────────────────────────────
+; When a layout form is not enough, `measure` evaluates a block, reports its bounding box
+; and removes it again, so you can place things yourself.
+
+def m = measure (smelter (entity electric-furnace))
+print ("an electric smelter is ", m.width, " by ", m.height, " tiles")
+
+for i in 0..5 => {
+  smelter (at (i * (m.width + 1), 13), entity electric-furnace)
+}

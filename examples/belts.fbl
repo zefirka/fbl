@@ -1,0 +1,55 @@
+; ─────────────────────────────────────────────────────────────────────────────
+; Belt routing. Every tile faces the next one — the game derives the curve art
+; from that, so a path is just a list of corners.
+; ─────────────────────────────────────────────────────────────────────────────
+
+defaults (tier blue)                  ; every belt below, unless it says otherwise
+
+; via lists the corners; each leg has to be horizontal or vertical.
+belt (from (0, 0), via ((10, 0), (10, 6)), to (2, 6), tier green)
+
+; An underground is a typed pair. Overrun its reach and you get a warning naming
+; the tier's actual range — try changing blue to yellow here.
+belt        (from (0, 9) to (3, 9))
+underground (from (4, 9) to (11, 9))
+belt        (from (12, 9) to (15, 9))
+
+; A splitter is 2×1 facing north, so facing it east swaps the footprint to 1×2.
+express-splitter (at (16, 9), east)
+
+; Tier names are a closed vocabulary: yellow red blue green, or a full entity name.
+defblock bus (int lanes, tier t = blue, int len = 20) => {
+  column for i in 0..lanes => { belt (at (0, 0), east, length len, tier t) }
+}
+
+bus (at (0, 13), lanes 4)
+
+; ── Balancers ────────────────────────────────────────────────────────────────
+; Ready-made, from a community blueprint book: every N→M from 1 to 8. The book is
+; built from belts, undergrounds and splitters alone, so one geometry serves every
+; tier — including turbo, which the book predates by four years.
+;
+; `left` is `west`; up, right, down and left all read as directions.
+
+at (0, 20) => {
+  row (gap 2) => {
+    balancer (4 to 4)
+    balancer (4 to 8)
+    balancer (2 to 4)
+  }
+}
+
+balancer (at (0, 34), 8 to 4, right, green)
+
+; ── auto ─────────────────────────────────────────────────────────────────────
+; `auto` does not route around what is in the way — it goes under it. Each run of
+; blocked tiles becomes an underground pair. If the tier cannot reach that far you
+; get an error naming one that can, rather than a belt laid over a machine.
+;
+; It only sees what was placed before it, so order matters.
+
+at (0, 44) => {
+  assembling-machine-3 (at (3, -1))
+  steel-chest (at (9, 0))
+  belt (from (0, 0) to (13, 0), auto)
+}
