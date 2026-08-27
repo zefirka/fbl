@@ -33,18 +33,10 @@ jobs:
 
       - run: npm ci
 
-      # The tests read the datasets off disk, so they need a copy even though the deployed
-      # site does not ship one.
+      # The tests read the datasets and the atlas off disk, so both have to be here even
+      # though only one of them is deployed from this checkout.
       - name: Fetch game data
         run: npm run fetch-data
-
-      - name: Test
-        run: npm test
-
-      # Vite copies public/ verbatim. Shipping a second copy of Wube's icon art would be both
-      # pointless and rude when FactorioLab already serves it with CORS open.
-      - name: Drop the datasets before building
-        run: rm -rf public/data && mkdir -p public/data && touch public/data/.gitkeep
 
       # The sprite atlas cannot be built here — the extractor reads the game's own PNGs — so it
       # lives on the `assets` branch instead of weighing down every clone of the source.
@@ -53,6 +45,14 @@ jobs:
           git fetch --depth 1 origin assets
           git checkout FETCH_HEAD -- public/sprites
           du -sh public/sprites
+
+      - name: Test
+        run: npm test
+
+      # Vite copies public/ verbatim. Shipping a second copy of Wube's icon art would be both
+      # pointless and rude when FactorioLab already serves it with CORS open.
+      - name: Drop the datasets before building
+        run: rm -rf public/data && mkdir -p public/data && touch public/data/.gitkeep
 
       - name: Build
         run: npm run build
