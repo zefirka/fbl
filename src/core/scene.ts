@@ -7,6 +7,19 @@ export interface ModuleSpec {
   quality?: string
 }
 
+/** What a belt or chest is carrying. Metadata: it never reaches the blueprint. */
+export interface ContentEntry {
+  item: string
+  /** Belts have two lanes; a chest entry names no side. */
+  side?: 'left' | 'right'
+}
+
+/** An inserter's item filters. `negated` is Factorio's blacklist mode. */
+export interface FilterSpec {
+  items: string[]
+  negated: boolean
+}
+
 export interface PlacedEntity {
   proto: Prototype
   /** Top-left tile of the footprint *after* rotation, in absolute tile coordinates. */
@@ -21,6 +34,14 @@ export interface PlacedEntity {
   modules?: ModuleSpec[]
   quality?: string
   undergroundType?: 'input' | 'output'
+  /** Metadata only — what this belt or chest is meant to carry. */
+  content?: ContentEntry[]
+  /** Inserters and loaders. */
+  filters?: FilterSpec
+  /** Splitters. */
+  inPriority?: 'left' | 'right'
+  outPriority?: 'left' | 'right'
+  splitterFilter?: string
   loc?: Loc
 }
 

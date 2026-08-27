@@ -50,6 +50,11 @@ export function bareSlot(slots: SlotDef[], type: Type): SlotDef | undefined {
 
 const AT: SlotDef = { name: 'at', type: T.coord, doc: 'top-left tile of the footprint' }
 const QUALITY: SlotDef = { name: 'quality', type: T.enum('quality') }
+const CONTENT: SlotDef = {
+  name: 'content',
+  type: T.content,
+  doc: 'what it carries — metadata, never written to the blueprint',
+}
 
 /** The slots a game entity accepts, derived from what its prototype actually supports. */
 export function entitySlots(proto: Prototype, supportsQuality: boolean): SlotDef[] {
@@ -72,6 +77,21 @@ export function entitySlots(proto: Prototype, supportsQuality: boolean): SlotDef
   }
   if (supportsQuality) slots.push(QUALITY)
 
+  // Metadata, for the preview and for whatever reads the blueprint afterwards.
+  if (proto.kind === 'belt' || proto.kind === 'underground-belt' || proto.kind === 'container') {
+    slots.push(CONTENT)
+  }
+  if (proto.kind === 'inserter') {
+    slots.push({ name: 'filter', type: T.filters, doc: 'items to pass; `not` for a blacklist' })
+  }
+  if (proto.kind === 'splitter') {
+    slots.push(
+      { name: 'filter', type: T.enum('item'), doc: 'the one item a splitter can filter' },
+      { name: 'in-priority', type: T.enum('side'), doc: 'the side it prefers to take from' },
+      { name: 'out-priority', type: T.enum('side'), doc: 'the side it prefers to give to' },
+    )
+  }
+
   return slots
 }
 
@@ -93,11 +113,13 @@ export const HELPER_SLOTS: Record<string, SlotDef[]> = {
     { name: 'length', type: T.int },
     { name: 'tier', type: T.enum('tier') },
     { name: 'route', type: T.enum('routing'), doc: 'auto tunnels under whatever is in the way' },
+    CONTENT,
   ],
   underground: [
     { name: 'from', type: T.coord, aliases: ['at'] },
     { name: 'to', type: T.coord, required: true },
     { name: 'tier', type: T.enum('tier') },
+    CONTENT,
   ],
   balancer: BALANCER_SLOTS,
 }

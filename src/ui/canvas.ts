@@ -9,6 +9,24 @@ const ICON_CELL = 64
 /** Vanilla tops out at four module slots; the cap only guards against a computed list. */
 const MAX_MODULE_ICONS = 8
 
+/** Past this many items a chest shows a count instead of a huddle of unreadable icons. */
+const MAX_CHEST_ICONS = 4
+
+/** Belts run along one of the four cardinal directions; this is the tile they flow into. */
+const STEP: Record<number, { x: number; y: number }> = {
+  0: { x: 0, y: -1 },
+  4: { x: 1, y: 0 },
+  8: { x: 0, y: 1 },
+  12: { x: -1, y: 0 },
+}
+
+/** The belt's own left, which is the forward vector turned a quarter anticlockwise. */
+function laneVector(dir: number, side: 'left' | 'right'): { x: number; y: number } {
+  const f = STEP[dir] ?? STEP[0]
+  const left = { x: f.y, y: -f.x }
+  return side === 'left' ? left : { x: -left.x, y: -left.y }
+}
+
 export type ViewMode = 'sprites' | 'schematic'
 
 const TIER_TINT: Record<string, string> = {
@@ -55,6 +73,7 @@ export class BlueprintCanvas {
   private entities: PlacedEntity[] = []
   private drawOrder: PlacedEntity[] = []
   private clashing = new Set<PlacedEntity>()
+  private contentHeads = new Set<PlacedEntity>()
   private variants = new Map<PlacedEntity, SpriteRect>()
 
   private atlas: LoadedAtlas | null = null
@@ -118,6 +137,7 @@ export class BlueprintCanvas {
   setScene(entities: PlacedEntity[], clashing: Set<PlacedEntity>): void {
     this.entities = entities
     this.clashing = clashing
+    this.contentHeads = this.computeContentHeads()
     this.drawOrder = [...entities].sort(
       (a, b) => layerOf(a) - layerOf(b) || a.y + a.h - (b.y + b.h) || a.x - b.x,
     )
@@ -126,6 +146,31 @@ export class BlueprintCanvas {
     this.hovered = null
     this.tooltip.hidden = true
     this.requestRender()
+  }
+
+  /**
+   * A belt run carries the same content on every tile, and an icon on each of them would be
+   * a wall of noise. Only the tile where the content starts — the head of the run, and every
+   * tunnel exit, where items surface again — gets to draw it.
+   */
+  private computeContentHeads(): Set<PlacedEntity> {
+    const heads = new Set<PlacedEntity>()
+    const carriers = this.entities.filter((entity) => entity.content?.length)
+    if (carriers.length === 0) return heads
+
+    const byTile = new Map<string, PlacedEntity>()
+    for (const entity of carriers) byTile.set(`${entity.x},${entity.y}`, entity)
+
+    for (const entity of carriers) {
+      const step = STEP[entity.dir]
+      if (!step || entity.proto.kind === 'container') {
+        heads.add(entity)
+        continue
+      }
+      const upstream = byTile.get(`${entity.x - step.x},${entity.y - step.y}`)
+      if (!upstream || upstream.proto.kind === 'container') heads.add(entity)
+    }
+    return heads
   }
 
   private recomputeVariants(): void {
@@ -282,6 +327,16 @@ export class BlueprintCanvas {
       }
       for (const [label, count] of counts) lines.push(`${count}× ${label}`)
     }
+    if (found.content?.length) {
+      const parts = found.content.map((entry) => (entry.side ? `${entry.item} (${entry.side})` : entry.item))
+      lines.push(`carries ${parts.join(', ')}`)
+    }
+    if (found.filters?.items.length) {
+      lines.push(`${found.filters.negated ? 'blocks' : 'passes'} ${found.filters.items.join(', ')}`)
+    }
+    if (found.splitterFilter) lines.push(`filter ${found.splitterFilter} → ${found.outPriority ?? 'left'}`)
+    if (found.inPriority) lines.push(`takes from ${found.inPriority}`)
+    if (found.outPriority) lines.push(`gives to ${found.outPriority}`)
 
     this.tooltip.innerHTML = lines.join('\n')
     this.tooltip.hidden = false
@@ -517,6 +572,9 @@ export class BlueprintCanvas {
     }
 
     this.drawModules(entity, origin, w, h)
+    this.drawContent(entity, origin, w, h)
+    this.drawFilters(entity, origin, w, h)
+    this.drawPriorities(entity, origin, w, h)
 
     if (this.clashing.has(entity)) {
       ctx.fillStyle = 'rgba(255, 80, 80, 0.32)'
@@ -600,6 +658,171 @@ export class BlueprintCanvas {
       ctx.fillStyle = '#8b95a3'
       ctx.fillText(overflow, cursor, top + pillHeight / 2)
     }
+  }
+
+  /** One item icon on a dark disc, the shared shape behind every metadata badge. */
+  private drawItemBadge(item: string, cx: number, cy: number, size: number, tint?: string): void {
+    const icon = this.icons(item)
+    if (!icon || !this.iconSheet) return
+
+    const ctx = this.ctx
+    ctx.fillStyle = tint ?? 'rgba(12, 15, 19, 0.78)'
+    roundRect(ctx, cx - size * 0.64, cy - size * 0.64, size * 1.28, size * 1.28, size * 0.3)
+    ctx.fill()
+    ctx.drawImage(this.iconSheet, icon.x, icon.y, ICON_CELL, ICON_CELL, cx - size / 2, cy - size / 2, size, size)
+  }
+
+  /**
+   * What a belt or chest is meant to carry. It never reaches the blueprint, but seeing which
+   * item travels on which lane is most of reading a bus at a glance.
+   */
+  private drawContent(entity: PlacedEntity, origin: { x: number; y: number }, w: number, h: number): void {
+    const content = entity.content
+    if (!content?.length || !this.iconSheet || !this.contentHeads.has(entity)) return
+
+    const scale = this.camera.scale
+    if (scale < 20) return
+
+    const ctx = this.ctx
+    const cx = origin.x + w / 2
+    const cy = origin.y + h / 2
+
+    if (entity.proto.kind === 'container') {
+      const items = [...new Set(content.map((entry) => entry.item))]
+      if (items.length > MAX_CHEST_ICONS) {
+        // Past a handful the icons stop being readable, so say how many kinds are in there.
+        const label = `${items.length} items`
+        // Measure once at a known size and scale from that, so the pill stays inside the
+        // chest instead of reaching across its neighbours.
+        ctx.font = `600 10px ui-monospace, Menlo, monospace`
+        const font = Math.max(7, Math.min(Math.min(w, h) * 0.28, (w * 0.86 * 10) / ctx.measureText(label).width))
+        ctx.font = `600 ${font}px ui-monospace, Menlo, monospace`
+        ctx.textAlign = 'center'
+        ctx.textBaseline = 'middle'
+        const width = ctx.measureText(label).width
+        ctx.fillStyle = 'rgba(12, 15, 19, 0.82)'
+        roundRect(ctx, cx - width / 2 - font * 0.4, cy - font * 0.75, width + font * 0.8, font * 1.5, font * 0.75)
+        ctx.fill()
+        ctx.fillStyle = '#e8edf5'
+        ctx.fillText(label, cx, cy)
+        ctx.textAlign = 'left'
+        return
+      }
+
+      // Up to four kinds tile the chest: one centred, otherwise a 2×2 grid.
+      const size = items.length === 1 ? Math.min(w, h) * 0.44 : Math.min(w, h) * 0.3
+      const spread = size * 0.72
+      items.forEach((item, index) => {
+        const dx = items.length === 1 ? 0 : (index % 2 === 0 ? -spread : spread)
+        const dy = items.length === 1 ? 0 : (index < 2 ? -spread : spread)
+        this.drawItemBadge(item, cx + dx, cy + (items.length === 2 ? 0 : dy), size)
+      })
+      return
+    }
+
+    // On a belt the icon rides its own lane, so the picture matches what the items do.
+    const size = Math.min(w, h) * 0.34
+    for (const entry of content) {
+      const lane = entry.side ? laneVector(entity.dir, entry.side) : { x: 0, y: 0 }
+      this.drawItemBadge(entry.item, cx + lane.x * w * 0.24, cy + lane.y * h * 0.24, size)
+    }
+  }
+
+  /** An inserter's filters, struck through when they are a blacklist. */
+  private drawFilters(entity: PlacedEntity, origin: { x: number; y: number }, w: number, h: number): void {
+    const spec = entity.filters
+    if (!spec?.items.length || !this.iconSheet || this.camera.scale < 22) return
+
+    const ctx = this.ctx
+    const size = Math.min(w, h) * 0.4
+    const shown = spec.items.slice(0, 2)
+    const gap = size * 0.2
+    const total = shown.length * size + (shown.length - 1) * gap
+    const cy = origin.y + h * 0.32
+    let cx = origin.x + w / 2 - total / 2 + size / 2
+
+    for (const item of shown) {
+      this.drawItemBadge(item, cx, cy, size, spec.negated ? 'rgba(74, 16, 16, 0.86)' : 'rgba(12, 15, 19, 0.78)')
+      if (spec.negated) {
+        ctx.strokeStyle = '#ff6b6b'
+        ctx.lineWidth = Math.max(1.4, size * 0.12)
+        ctx.lineCap = 'round'
+        ctx.beginPath()
+        ctx.moveTo(cx - size * 0.44, cy + size * 0.44)
+        ctx.lineTo(cx + size * 0.44, cy - size * 0.44)
+        ctx.stroke()
+      }
+      cx += size + gap
+    }
+
+    const hidden = spec.items.length - shown.length
+    if (hidden > 0) {
+      ctx.font = `600 ${Math.max(8, Math.round(size * 0.6))}px ui-monospace, Menlo, monospace`
+      ctx.textBaseline = 'middle'
+      ctx.fillStyle = spec.negated ? '#ff9b9b' : '#8b95a3'
+      ctx.fillText(`+${hidden}`, cx - size * 0.3, cy)
+    }
+  }
+
+  /**
+   * Splitter lane priorities and the filter, drawn where they act: a chevron on the input
+   * edge for the lane it prefers to take from, another on the output edge for the lane it
+   * gives to, and the filtered item on the lane it is sent out by. Which edge a chevron sits
+   * on already says whether it is the input or the output, so both are the same colour.
+   */
+  private drawPriorities(entity: PlacedEntity, origin: { x: number; y: number }, w: number, h: number): void {
+    if (entity.proto.kind !== 'splitter') return
+    if (!entity.inPriority && !entity.outPriority && !entity.splitterFilter) return
+    if (this.camera.scale < 20) return
+
+    const ctx = this.ctx
+    const forward = STEP[entity.dir] ?? STEP[0]
+    const cx = origin.x + w / 2
+    const cy = origin.y + h / 2
+    // The splitter is one tile deep along the flow and two tiles wide across it.
+    const depth = Math.abs(forward.x) * w + Math.abs(forward.y) * h
+    const across = Math.abs(forward.x) * h + Math.abs(forward.y) * w
+
+    const mark = (side: 'left' | 'right', edge: -1 | 1): void => {
+      const lane = laneVector(entity.dir, side)
+      const mx = cx + forward.x * depth * 0.33 * edge + lane.x * across * 0.25
+      const my = cy + forward.y * depth * 0.33 * edge + lane.y * across * 0.25
+      const r = Math.min(depth, across / 2) * 0.27
+      // Screen y grows downward, and so does Factorio's; north is -y, which is angle -90°.
+      const angle = (entity.dir / 16) * Math.PI * 2 - Math.PI / 2
+
+      ctx.save()
+      ctx.translate(mx, my)
+      ctx.rotate(angle)
+      ctx.strokeStyle = '#ffae3f'
+      ctx.lineWidth = Math.max(1.6, r * 0.46)
+      ctx.lineCap = 'round'
+      ctx.lineJoin = 'round'
+      ctx.beginPath()
+      ctx.moveTo(-r * 0.5, -r * 0.75)
+      ctx.lineTo(r * 0.45, 0)
+      ctx.lineTo(-r * 0.5, r * 0.75)
+      ctx.stroke()
+      ctx.restore()
+    }
+
+    // A filter always leaves by one named side, and the game picks left when none was given.
+    // Showing that side makes the preview say what the blueprint holds.
+    const outSide = entity.outPriority ?? (entity.splitterFilter ? 'left' : undefined)
+
+    // The item goes down first so the chevrons stay crisp where the two meet.
+    if (entity.splitterFilter) {
+      const lane = laneVector(entity.dir, outSide ?? 'left')
+      this.drawItemBadge(
+        entity.splitterFilter,
+        cx + lane.x * across * 0.25,
+        cy + lane.y * across * 0.25,
+        Math.min(w, h) * 0.38,
+      )
+    }
+
+    if (entity.inPriority) mark(entity.inPriority, -1)
+    if (outSide) mark(outSide, 1)
   }
 
   private drawChevron(

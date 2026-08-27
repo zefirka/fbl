@@ -1,4 +1,5 @@
 import { argForm } from './args'
+import { readContent, readFilters } from './metadata'
 import { BALANCER_LIMIT, balancerLayout, BELT, SPLITTER, UNDERGROUND } from './balancer'
 import type { Arg, Expr, Module, Param, Stmt } from './ast'
 import { fail, type Loc } from './errors'
@@ -16,7 +17,7 @@ import {
 } from './geometry'
 import type { Prototype, ProtoRegistry } from './proto'
 import { planRoute, type RouteStep } from './routing'
-import { Scene, type ModuleSpec } from './scene'
+import { Scene, type ContentEntry, type FilterSpec, type ModuleSpec } from './scene'
 import { bareSlot, blockSlots, entitySlots, findSlot, HELPER_SLOTS, LAYOUT_SLOTS, type SlotDef } from './slots'
 import { tileIndex } from './topology'
 import { ALIGNMENTS, ROUTINGS, T, TIERS, UNDERGROUND_TYPES, type Type } from './types'
@@ -109,7 +110,7 @@ export class Runtime {
       case 'defaults': {
         const entries: DefaultEntry[] = []
         for (const arg of statement.args) {
-          const form = argForm(arg, [])
+          const form = argForm(arg, [], (name) => this.isCallable(name))
           if (!form.slotName) continue
           entries.push({ target: statement.target, slot: form.slotName, value: this.evaluate(form.expr, scope) })
         }
@@ -159,6 +160,42 @@ export class Runtime {
       case 'expr':
         this.evaluate(statement.expr, scope)
     }
+  }
+
+  /** The argument that filled a given slot, for the two slots read as syntax. */
+  private structuredArg(args: Arg[], slots: SlotDef[], name: string): Arg | undefined {
+    return args.find((arg) => argForm(arg, slots, (n) => this.isCallable(n)).slotName === name)
+  }
+
+  private readContentOf(args: Arg[], slots: SlotDef[]): ContentEntry[] | undefined {
+    const arg = this.structuredArg(args, slots, 'content')
+    if (!arg) return undefined
+    const read = readContent(arg)
+    if (!read.ok) return undefined
+    return read.value.map((entry) => {
+      const side = entry.side === 'left' || entry.side === 'right' ? entry.side : undefined
+      return side ? { item: entry.item, side } : { item: entry.item }
+    })
+  }
+
+  private readFiltersOf(args: Arg[], slots: SlotDef[]): FilterSpec | undefined {
+    const arg = this.structuredArg(args, slots, 'filter')
+    if (!arg) return undefined
+    const read = readFilters(arg)
+    if (!read.ok) return undefined
+    return { items: read.value.items.map((item) => item.name), negated: read.value.negated }
+  }
+
+  /** Whether a bare name could head a call, which is what settles `label (…)` ambiguity. */
+  private isCallable(name: string): boolean {
+    return (
+      name in BUILTINS ||
+      this.blocks.has(name) ||
+      this.registry.entities.has(name) ||
+      name === 'belt' ||
+      name === 'underground' ||
+      name === 'balancer'
+    )
   }
 
   private iterable(value: Value, loc?: Loc): Value[] {
@@ -447,7 +484,7 @@ export class Runtime {
     const filled = new Map<string, Value>()
 
     for (const arg of args) {
-      const form = argForm(arg, slots)
+      const form = argForm(arg, slots, (name) => this.isCallable(name))
       let slot: SlotDef | undefined
 
       if (form.slotName) {
@@ -470,7 +507,9 @@ export class Runtime {
         continue
       }
 
-      filled.set(slot.name, this.evaluate(form.expr, scope))
+      // Content and filters are read from the arguments as written, not evaluated: the
+      // pairing and the `not` live in the syntax and a value would flatten them away.
+      filled.set(slot.name, slot.type.k === 'content' || slot.type.k === 'filters' ? null : this.evaluate(form.expr, scope))
     }
 
     if (applyDefaults && target) {
@@ -555,9 +594,19 @@ export class Runtime {
       }
     }
 
+    const side = (value: Value | undefined): 'left' | 'right' | undefined => {
+      const member = memberOf(value)
+      return member === 'left' || member === 'right' ? member : undefined
+    }
+
     const entity = this.scene.place(proto, position.x, position.y, dir, {
       recipe,
       modules,
+      content: this.readContentOf(args, slots),
+      filters: proto.kind === 'inserter' ? this.readFiltersOf(args, slots) : undefined,
+      splitterFilter: proto.kind === 'splitter' ? memberOf(filled.get('filter')) : undefined,
+      inPriority: side(filled.get('in-priority')),
+      outPriority: side(filled.get('out-priority')),
       quality: memberOf(filled.get('quality')),
       undergroundType: proto.kind === 'underground-belt' ? ((memberOf(filled.get('type')) ?? 'input') as 'input' | 'output') : undefined,
       loc,
@@ -597,6 +646,7 @@ export class Runtime {
       points.push(vec(last.x + step.x * (length - 1), last.y + step.y * (length - 1)))
     }
 
+    const content = this.readContentOf(args, HELPER_SLOTS.belt)
     const corners = points.filter((p, i) => i === 0 || p.x !== points[i - 1].x || p.y !== points[i - 1].y)
     const path = expandPath(corners, loc)
     const from = this.scene.length
@@ -619,10 +669,11 @@ export class Runtime {
           : fallbackDir
 
       if (steps[i] === 'belt') {
-        this.scene.place(proto, path[i].x, path[i].y, dir, { loc })
+        this.scene.place(proto, path[i].x, path[i].y, dir, { content, loc })
       } else {
         this.scene.place(undergroundProto!, path[i].x, path[i].y, dir, {
           undergroundType: steps[i] === 'in' ? 'input' : 'output',
+          content,
           loc,
         })
       }
@@ -698,9 +749,10 @@ export class Runtime {
       this.scene.warn(`${proto.label} spans ${span - 1} tiles but reaches ${proto.undergroundReach}`, loc)
     }
 
+    const content = this.readContentOf(args, HELPER_SLOTS.underground)
     const from = this.scene.length
-    this.scene.place(proto, start.x, start.y, dir, { undergroundType: 'input', loc })
-    this.scene.place(proto, end.x, end.y, dir, { undergroundType: 'output', loc })
+    this.scene.place(proto, start.x, start.y, dir, { undergroundType: 'input', content, loc })
+    this.scene.place(proto, end.x, end.y, dir, { undergroundType: 'output', content, loc })
     return rectHandle(this.scene.bbox(from, this.scene.length), { name: proto.name })
   }
 

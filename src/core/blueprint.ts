@@ -19,6 +19,43 @@ interface BlueprintEntity {
   quality?: string
   type?: string
   items?: unknown
+  use_filters?: boolean
+  filters?: unknown[]
+  filter_mode?: string
+  filter?: unknown
+  input_priority?: string
+  output_priority?: string
+}
+
+/**
+ * An item reference inside a filter. 2.0 spells these out as signals with a quality and a
+ * comparator; 1.1 filters carry the bare name.
+ */
+function filterRef(name: string, profile: VersionProfile): unknown {
+  return profile.supportsQuality ? { name, quality: 'normal', comparator: '=' } : { name }
+}
+
+/** Inserter filters, and the whitelist/blacklist switch behind them. */
+function encodeFilters(entity: PlacedEntity, out: BlueprintEntity, profile: VersionProfile): void {
+  const spec = entity.filters
+  if (!spec || spec.items.length === 0) return
+
+  out.filters = spec.items.map((name, index) => ({ index: index + 1, ...(filterRef(name, profile) as object) }))
+  // A blacklist is the setting; a whitelist is what an inserter does by default.
+  if (spec.negated) out.filter_mode = 'blacklist'
+  // 1.1 has dedicated filter inserters, so there is no switch to turn on.
+  if (profile.supportsQuality) out.use_filters = true
+}
+
+/** Splitter filter and lane priorities, which are three independent fields in the game. */
+function encodeSplitter(entity: PlacedEntity, out: BlueprintEntity, profile: VersionProfile): void {
+  if (entity.inPriority) out.input_priority = entity.inPriority
+  if (entity.outPriority) out.output_priority = entity.outPriority
+  if (!entity.splitterFilter) return
+
+  out.filter = profile.supportsQuality ? filterRef(entity.splitterFilter, profile) : entity.splitterFilter
+  // The game holds a filter on one output side, and picks the left one when none was named.
+  if (!out.output_priority) out.output_priority = 'left'
 }
 
 /**
@@ -83,6 +120,9 @@ export function toBlueprintJSON(scene: Scene, registry: ProtoRegistry, options: 
 
     const items = encodeModules(entity, profile)
     if (items) out.items = items
+
+    if (entity.proto.kind === 'inserter') encodeFilters(entity, out, profile)
+    if (entity.proto.kind === 'splitter') encodeSplitter(entity, out, profile)
 
     return out
   })

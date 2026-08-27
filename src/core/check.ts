@@ -3,6 +3,7 @@ import type { Arg, Expr, Module, Param, Stmt, TypeExpr } from './ast'
 import type { Diagnostic, Loc } from './errors'
 import type { ProtoRegistry } from './proto'
 import { BALANCER_LIMIT, hasBalancer } from './balancer'
+import { readContent, readFilters } from './metadata'
 import {
   ANY_ENTITY_SLOTS,
   bareSlot,
@@ -15,7 +16,7 @@ import {
   type SlotDef,
 } from './slots'
 import { closestNames } from './suggest'
-import { assignable, namedType, showType, T, Universe, type Type } from './types'
+import { assignable, namedType, showType, SIDES, T, Universe, type Type } from './types'
 
 export interface BlockSignature {
   name: string
@@ -263,7 +264,11 @@ export class Checker {
     }
 
     for (const arg of statement.args) {
-      const form = argForm(arg, Object.keys(DEFAULTABLE).map((name) => ({ name, type: DEFAULTABLE[name] })))
+      const form = argForm(
+        arg,
+        Object.keys(DEFAULTABLE).map((name) => ({ name, type: DEFAULTABLE[name] })),
+        (name) => this.isCallable(name),
+      )
       if (!form.slotName) {
         this.error('defaults needs `slot value` pairs', form.loc, `settable: ${Object.keys(DEFAULTABLE).join(', ')}`)
         continue
@@ -316,6 +321,11 @@ export class Checker {
     return undefined
   }
 
+  /** Whether a bare name could head a call, which is what settles `label (…)` ambiguity. */
+  private isCallable(name: string): boolean {
+    return Boolean(findFunction(name)) || this.lookupCallee(name) !== undefined
+  }
+
   private suggestEntity(name: string): string | undefined {
     const near = closestNames(name, [...this.registry.entities.keys(), ...this.blocks.keys()], 2)
     return near.length ? `did you mean ${near.map((n) => `'${n}'`).join(' or ')}?` : undefined
@@ -333,7 +343,7 @@ export class Checker {
     const fromBare = new Set<string>()
 
     for (const arg of args) {
-      const form = argForm(arg, slots)
+      const form = argForm(arg, slots, (name) => this.isCallable(name))
 
       let slot: SlotDef | undefined
       if (form.slotName) {
@@ -380,6 +390,27 @@ export class Checker {
         this.warn(`'${slot.name}' is given twice; the last one wins`, form.loc)
       }
 
+      // Metadata and filters carry their own shape, which a plain type check cannot see.
+      if (slot.type.k === 'content' || slot.type.k === 'filters') {
+        if (slot.type.k === 'content') this.checkContent(arg, calleeName)
+        else this.checkFilters(arg)
+        filled.set(slot.name, form.expr)
+        continue
+      }
+
+      // The splitter reaches here instead: it holds one filter, so a list is worth saying
+      // plainly rather than letting the type error talk about tuples.
+      if (slot.name === 'filter' && arg.entries) {
+        const first = arg.entries[0]?.value
+        this.error(
+          'a splitter filters a single item',
+          arg.loc,
+          first?.kind === 'name' ? `write it as 'filter ${first.name}'` : undefined,
+        )
+        filled.set(slot.name, form.expr)
+        continue
+      }
+
       const actual = this.typeOf(form.expr, scope, slot.type)
       if (!assignable(actual, slot.type)) {
         this.error(`${slot.name} expects ${showType(slot.type)}, got ${showType(actual)}`, form.expr.loc)
@@ -405,6 +436,64 @@ export class Checker {
       return `an unlabelled coordinate fills 'at'; write '${slot.name} (x, y)' to reach this one`
     }
     return `${slot.name} takes ${showType(slot.type)}`
+  }
+
+  private checkItem(name: string, loc?: Loc): void {
+    if (this.universe.isMember('item', name)) return
+    const near = closestNames(name, this.universe.members('item'), 2)
+    this.error(
+      `'${name}' is not an item`,
+      loc,
+      near.length ? `did you mean ${near.map((n) => `'${n}'`).join(' or ')}?` : undefined,
+    )
+  }
+
+  /** `content` is metadata, but a wrong item name in it is still a wrong item name. */
+  private checkContent(arg: Arg, calleeName: string): void {
+    const read = readContent(arg)
+    if (!read.ok) {
+      this.error(read.error.message, read.error.loc, read.error.hint)
+      return
+    }
+
+    const proto = this.registry.entities.get(calleeName)
+    const chest = proto?.kind === 'container'
+    const capacity = chest ? (proto?.slots ?? 1) : 2
+
+    if (read.value.length > capacity) {
+      this.error(
+        chest
+          ? `${proto?.label} holds ${capacity} stacks, and ${read.value.length} items were listed`
+          : `a belt has two lanes, and ${read.value.length} items were listed`,
+        arg.loc,
+      )
+    }
+
+    const taken = new Set<string>()
+    for (const entry of read.value) {
+      this.checkItem(entry.item, entry.loc)
+      if (entry.side === undefined) continue
+
+      if (chest) {
+        this.error(`a chest has no sides`, entry.loc, 'drop the side, or move this onto a belt')
+        continue
+      }
+      if (!SIDES.includes(entry.side)) {
+        this.error(`'${entry.side}' is not a side`, entry.loc, `a belt lane is ${SIDES.join(' or ')}`)
+        continue
+      }
+      if (taken.has(entry.side)) this.error(`two items on the ${entry.side} lane`, entry.loc)
+      taken.add(entry.side)
+    }
+  }
+
+  private checkFilters(arg: Arg): void {
+    const read = readFilters(arg)
+    if (!read.ok) {
+      this.error(read.error.message, read.error.loc, read.error.hint)
+      return
+    }
+    for (const item of read.value.items) this.checkItem(item.name, item.loc)
   }
 
   /** Everything the game data lets us decide before a single entity is placed. */

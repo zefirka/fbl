@@ -974,3 +974,92 @@ test('the smelters array example builds clean', () => {
   assert.equal(power.unpowered.length, 0, 'one substation per block covers it')
   assert.equal(scene.entities.filter((e) => e.proto.name === 'electric-furnace').length, 36)
 })
+
+// ── Contents, filters and priorities ──────────────────────────────────────────
+
+test('content names the lane an item rides on, and never reaches the blueprint', () => {
+  const { scene } = run('belt (from (0, 0), to (3, 0), content (iron-ore left, coal right))')
+  for (const entity of scene.entities) {
+    assert.deepEqual(entity.content, [
+      { item: 'iron-ore', side: 'left' },
+      { item: 'coal', side: 'right' },
+    ])
+  }
+
+  const json = exportBlueprint(scene, registry).json.blueprint
+  assert.equal(JSON.stringify(json).includes('iron-ore'), false, 'content is metadata only')
+})
+
+test('a chest lists items without sides, up to the stacks it has', () => {
+  const { scene } = run('steel-chest (at (0, 0), content (iron-plate, copper-plate))')
+  assert.deepEqual(scene.entities[0].content, [{ item: 'iron-plate' }, { item: 'copper-plate' }])
+
+  assert.match(errorsIn('wooden-chest (at (0, 0), content (iron-plate left))')[0].message, /no sides/)
+  // A wooden chest holds 16 stacks, so the cap is the chest's, not a fixed number.
+  const many = Array.from({ length: 17 }, () => 'iron-plate').join(', ')
+  assert.match(errorsIn(`wooden-chest (at (0, 0), content (${many}))`)[0].message, /holds 16 stacks/)
+})
+
+test('a belt carries two items, one per lane', () => {
+  assert.match(errorsIn('belt (at (0, 0), content (iron-ore, coal, stone))')[0].message, /two lanes/)
+  assert.match(errorsIn('belt (at (0, 0), content (iron-ore left, coal left))')[0].message, /left lane/)
+  assert.match(errorsIn('belt (at (0, 0), content (iron-ore up))')[0].message, /not a side/)
+  assert.match(errorsIn('belt (at (0, 0), content (iron-plat))')[0].message, /not an item/)
+})
+
+test('an inserter filter is a whitelist, and not makes the whole list a blacklist', () => {
+  const pass = run('fast-inserter (at (0, 0), filter (copper-plate, copper-ore))').scene
+  assert.deepEqual(pass.entities[0].filters, { items: ['copper-plate', 'copper-ore'], negated: false })
+
+  const block = run('fast-inserter (at (0, 0), filter (not copper-ore))').scene
+  assert.deepEqual(block.entities[0].filters, { items: ['copper-ore'], negated: true })
+
+  // The mode belongs to the inserter, so `not` only makes sense in front of the list.
+  assert.match(errorsIn('fast-inserter (at (0, 0), filter (copper-ore, not coal))')[0].message, /whole list/)
+})
+
+test('inserter filters export as a numbered list with the blacklist switch', async () => {
+  const { scene } = run('fast-inserter (at (0, 0), filter (not copper-plate, copper-ore))')
+  const entity = exportBlueprint(scene, registry).json.blueprint.entities[0]
+  assert.equal(entity.use_filters, true)
+  assert.equal(entity.filter_mode, 'blacklist')
+  assert.deepEqual(entity.filters, [
+    { index: 1, name: 'copper-plate', quality: 'normal', comparator: '=' },
+    { index: 2, name: 'copper-ore', quality: 'normal', comparator: '=' },
+  ])
+
+  // 1.1 has dedicated filter inserters, so there is no switch to turn on and no quality.
+  const old = await registryFor('1.1', V11)
+  const legacy = exportBlueprint(run('filter-inserter (at (0, 0), filter (copper-plate))', old).scene, old)
+  const first = legacy.json.blueprint.entities[0]
+  assert.equal(first.use_filters, undefined)
+  assert.deepEqual(first.filters, [{ index: 1, name: 'copper-plate' }])
+})
+
+test('a splitter filters one item and prefers a side each way', () => {
+  const { scene } = run('splitter (at (0, 0), filter copper-plate, in-priority right)')
+  const entity = exportBlueprint(scene, registry).json.blueprint.entities[0]
+  assert.equal(entity.input_priority, 'right')
+  assert.deepEqual(entity.filter, { name: 'copper-plate', quality: 'normal', comparator: '=' })
+  // The game sends a filtered item left when no output side was named.
+  assert.equal(entity.output_priority, 'left')
+
+  const plain = exportBlueprint(run('splitter (at (0, 0), out-priority right)').scene, registry)
+  assert.equal(plain.json.blueprint.entities[0].output_priority, 'right')
+  assert.equal(plain.json.blueprint.entities[0].filter, undefined)
+
+  assert.match(errorsIn('splitter (at (0, 0), filter (copper-plate, coal))')[0].message, /a single item/)
+  assert.match(errorsIn('splitter (at (0, 0), in-priority up)')[0].message, /not a side/)
+})
+
+test('the sorting example builds clean', () => {
+  const source = readFileSync(join(ROOT, 'examples', 'sorting.fbl'), 'utf8')
+  const { scene } = run(source)
+  assert.equal(scene.findCollisions().length, 0)
+  assert.equal(scene.entities.filter((e) => e.content?.length).length, 31, 'every belt tile and chest carries its declaration')
+})
+
+test('only the entities that can hold them accept content and filters', () => {
+  assert.match(errorsIn('assembling-machine-3 (at (0, 0), content (iron-plate))')[0].message, /no slot 'content'/)
+  assert.match(errorsIn('steel-chest (at (0, 0), filter (iron-plate))')[0].message, /no slot 'filter'/)
+})

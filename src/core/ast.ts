@@ -32,6 +32,11 @@ export interface Arg {
    * The parser records both and the checker keeps whichever the callee supports.
    */
   asCall?: Expr
+  /**
+   * When the value was parenthesised, the arguments as written — which keeps the pairing in
+   * `content (iron-ore left, coal right)` that a flat tuple would lose.
+   */
+  entries?: Arg[]
   loc: Loc
 }
 

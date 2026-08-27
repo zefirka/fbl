@@ -241,6 +241,29 @@ the whole layout rotates with `dir`. A pair the library does not have is a compi
 Directions also answer to screen words: `up` `right` `down` `left` are `north` `east` `south`
 `west`.
 
+### Contents, filters and priorities
+
+```
+belt (from (0, 0) to (8, 0), content (iron-ore left, copper-ore right))
+steel-chest (at (9, 0), content (iron-plate, copper-plate))
+
+fast-inserter (at (0, 2), filter (copper-plate, copper-ore))
+fast-inserter (at (2, 2), filter (not copper-ore))
+
+splitter (at (4, 2), filter copper-plate, in-priority right)
+splitter (at (6, 2), in-priority left, out-priority right)
+```
+
+`content` is metadata: it never reaches the blueprint. It is what the preview draws — on the
+lane the item rides, at the head of a run and wherever a tunnel surfaces — and what the
+throughput analysis will read. A belt has two lanes; a chest holds as many kinds as it has
+stacks, and shows a count past four.
+
+Filters do reach the blueprint. `not` sits in front of an inserter's whole list, because the
+game keeps one whitelist/blacklist switch per inserter rather than one per item. A splitter
+filters a single item and prefers a side each way; naming a filter without `out-priority`
+sends it left, which is what the game does with the field left empty.
+
 ### Functions
 
 `repeat` `count` `min` `max` `abs` `floor` `ceil` `round` `print`, plus three that read the
@@ -324,6 +347,7 @@ src/core/          the language — no DOM, runs in Node too
   parser.ts        tokens → AST
   types.ts         the type lattice and the closed vocabularies
   slots.ts         which slots each entity, helper and block accepts
+  metadata.ts      reads the slots written as brackets: content, filters
   check.ts         the static pass; everything above runs before a single placement
   run.ts           AST → placements (frames, layout, defaults, helpers)
   scene.ts         the placement accumulator; bbox, translate, collision
@@ -332,7 +356,7 @@ src/core/          the language — no DOM, runs in Node too
 src/data/          game data: dataset schema, version profiles, geometry table
 src/ui/            studio: canvas renderer, Monaco editor, generated docs, wiring
   lang/            language service: tokenizer, completion context, providers
-examples/*.fbl     the three programs in the example dropdown
+examples/*.fbl     the programs in the example dropdown
 ```
 
 `src/core` never imports from `src/ui`. `npm run build:core` bundles it for Node, which is
@@ -413,7 +437,8 @@ What to know before trusting it with a real base:
 4. Ratio checking — the reason to build a language rather than a library. The dataset
    already carries `machine.speed`, `recipe.time` and `belt.speed`; the pieces for
    "10 assemblers at 1.25 speed consume 37.5 items/s, one blue belt supplies 45" are all
-   present and unused.
+   present and unused. `content` is the other half of it: it says which belt carries what,
+   so a throughput check has somewhere to start.
 5. A decompiler: blueprint string → source. The fastest way to a standard library is to
    read existing blueprint books back into blocks.
 

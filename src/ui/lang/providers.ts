@@ -211,12 +211,29 @@ export function registerLanguage(monaco: typeof Monaco, host: LanguageHost): voi
           break
       }
 
+      function itemItems(): Monaco.languages.CompletionItem[] {
+        return universe.members('item').map((name) => item(name, Kind.EnumMember, 'item'))
+      }
+
       function valueSuggestions(type: Type, callee: string): Monaco.languages.CompletionItem[] {
         const registry = host.registry!
         if (type.k === 'coord') return [item('(x, y)', Kind.Snippet, 'a tile', undefined, '(${1:0}, ${2:0})')]
         if (type.k === 'array') return valueSuggestions(type.of, callee)
         if (type.k === 'module') {
           return [...registry.modules].map((name) => item(name, Kind.EnumMember, 'module'))
+        }
+        if (type.k === 'content') {
+          // An entry is an item, optionally followed by the belt lane it rides on.
+          return [
+            ...universe.members('side').map((side) => item(side, Kind.EnumMember, 'belt lane', undefined, side, `0${side}`)),
+            ...itemItems(),
+          ]
+        }
+        if (type.k === 'filters') {
+          return [
+            item('not', Kind.Keyword, 'turn the list into a blacklist', undefined, 'not ', '0not'),
+            ...itemItems(),
+          ]
         }
         if (type.k !== 'enum') return []
 
@@ -231,9 +248,10 @@ export function registerLanguage(monaco: typeof Monaco, host: LanguageHost): voi
           }
           case 'entity':
             return [...entityItems(), ...blockItems()]
-          case 'item':
           case 'module-item':
             return [...registry.modules].map((name) => item(name, Kind.EnumMember, 'module'))
+          case 'item':
+            return itemItems()
           default:
             return universe.members(type.name).map((member) => item(member, Kind.EnumMember, type.name))
         }

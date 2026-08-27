@@ -1,0 +1,35 @@
+; ─────────────────────────────────────────────────────────────────────────────
+; Pulling one item off a mixed bus, and saying what is on it.
+;
+; `content` is metadata: it never reaches the blueprint. It is there so the
+; preview shows what flows where, and so the analyser can read it later.
+; ─────────────────────────────────────────────────────────────────────────────
+
+defaults (tier blue)
+
+; Two lanes, two ores. The icons are drawn where the run starts.
+belt (from (0, 0) to (7, 0), content (iron-ore left, copper-ore right))
+belt (from (0, 1) to (7, 1), content (iron-ore left, copper-ore right))
+
+; A splitter filters one item, and can prefer a side going in, coming out, or
+; both. Naming a filter without out-priority sends it left, as the game does.
+splitter (at (8, 0), east, filter copper-ore, in-priority right)
+
+belt (from (9, 0) to (14, 0), content (copper-ore left))
+belt (from (9, 1) to (14, 1), content (iron-ore left, copper-ore right))
+
+; No filter here, just the two lane preferences.
+splitter (at (15, 0), east, in-priority left, out-priority right)
+
+; An inserter's filters are a list; `not` in front of it turns the whole list
+; into a blacklist, which is the one switch the game keeps per inserter.
+fast-inserter (at (10, 2), down, filter (copper-ore))
+fast-inserter (at (13, 2), down, filter (not copper-ore))
+
+steel-chest (at (10, 3), content (copper-ore))
+steel-chest (at (13, 3), content (iron-ore, stone, coal))
+
+; Past four kinds a chest shows how many rather than a huddle of icons.
+steel-chest (at (16, 3), content (iron-plate, copper-plate, steel-plate, coal, stone))
+
+medium-electric-pole (at (12, 2))

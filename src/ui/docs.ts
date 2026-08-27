@@ -209,6 +209,34 @@ serves all of them — including turbo, which the book predates. The whole layou
 <p>Directions also answer to screen words: ${chips(['up', 'right', 'down', 'left'])} are
 ${chips(['north', 'east', 'south', 'west'])}.</p>
 
+<h2>Contents, filters and priorities</h2>
+<p><code>content</code> says what a belt or a chest is meant to be carrying. It is metadata:
+it never reaches the blueprint, it only shows in the preview and feeds the analysis that will
+read it later. A belt has two lanes, so an entry may name the side it rides on; a chest has
+none, and holds as many kinds as it has stacks:</p>
+${code(`
+belt (from (0, 0) to (8, 0), content (iron-ore left, coal right))
+steel-chest (at (9, 0), content (iron-plate, copper-plate))
+`)}
+<p>The icons are drawn where the run starts and wherever a tunnel surfaces, rather than on
+every tile. A chest carrying more than four kinds shows how many instead of the icons.</p>
+<p>Inserter filters are a list, and <code>not</code> in front of it makes the whole list a
+blacklist — the game holds one mode for the inserter, not one per item:</p>
+${code(`
+fast-inserter (at (0, 2), filter (copper-plate, copper-ore))
+fast-inserter (at (2, 2), filter (not copper-ore))
+`)}
+<p>A splitter filters a single item, and prefers a side on the way in, on the way out, or
+both. Naming a filter without <code>out-priority</code> sends it left, which is what the game
+does:</p>
+${code(`
+splitter (at (4, 2), filter copper-plate, in-priority right)
+splitter (at (6, 2), in-priority left, out-priority right)
+`)}
+<p>In the preview each one is a chevron on the lane it acts on, hugging the edge it belongs
+to — the input side at the back, the output side at the front. Left and right are the
+splitter's own, looking the way it faces.</p>
+
 <h2>Functions</h2>
 ${table(
   ['function', 'signature'],
@@ -221,7 +249,7 @@ ${table(
 <h2>Entity slots</h2>
 <p>Which slots an entity accepts is derived from its prototype, so a chest has no
 <code>recipe</code> and a pole has no <code>dir</code>. A few examples:</p>
-${['assembling-machine-3', 'bulk-inserter', 'underground-belt', 'steel-chest']
+${['assembling-machine-3', 'bulk-inserter', 'splitter', 'steel-chest']
   .map((name) => {
     const proto = registry.entities.get(name)
     if (!proto) return ''

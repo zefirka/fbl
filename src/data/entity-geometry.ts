@@ -48,6 +48,8 @@ export interface EntityGeometry {
    * inserters, lamps, radars — has to say so here.
    */
   powered?: boolean
+  /** Inventory slots, for chests. Caps how much `content` metadata makes sense. */
+  slots?: number
 }
 
 const belt = (kind: EntityKind, size: [number, number] = [1, 1]): EntityGeometry => ({
@@ -85,6 +87,9 @@ export const ENTITY_GEOMETRY: Record<string, EntityGeometry> = {
   'fast-inserter': { ...belt('inserter'), powered: true },
   'bulk-inserter': { ...belt('inserter'), powered: true },
   'stack-inserter': { ...belt('inserter'), powered: true },
+  // 1.1 keeps filtering to its own two inserters; 2.0 folded it into all of them.
+  'filter-inserter': { ...belt('inserter'), powered: true },
+  'stack-filter-inserter': { ...belt('inserter'), powered: true },
 
   // ── Power ────────────────────────────────────────────────────────────────────
   'small-electric-pole': { size: [1, 1], kind: 'pole', supplyArea: 2.5 },
@@ -100,14 +105,14 @@ export const ENTITY_GEOMETRY: Record<string, EntityGeometry> = {
   'heat-exchanger': { size: [3, 2], rotatable: true, kind: 'machine' },
 
   // ── Containers ───────────────────────────────────────────────────────────────
-  'wooden-chest': { size: [1, 1], kind: 'container' },
-  'iron-chest': { size: [1, 1], kind: 'container' },
-  'steel-chest': { size: [1, 1], kind: 'container' },
-  'passive-provider-chest': { size: [1, 1], kind: 'container' },
-  'active-provider-chest': { size: [1, 1], kind: 'container' },
-  'storage-chest': { size: [1, 1], kind: 'container' },
-  'buffer-chest': { size: [1, 1], kind: 'container' },
-  'requester-chest': { size: [1, 1], kind: 'container' },
+  'wooden-chest': { size: [1, 1], kind: 'container', slots: 16 },
+  'iron-chest': { size: [1, 1], kind: 'container', slots: 32 },
+  'steel-chest': { size: [1, 1], kind: 'container', slots: 48 },
+  'passive-provider-chest': { size: [1, 1], kind: 'container', slots: 48 },
+  'active-provider-chest': { size: [1, 1], kind: 'container', slots: 48 },
+  'storage-chest': { size: [1, 1], kind: 'container', slots: 48 },
+  'buffer-chest': { size: [1, 1], kind: 'container', slots: 48 },
+  'requester-chest': { size: [1, 1], kind: 'container', slots: 48 },
 
   // ── Fluids ───────────────────────────────────────────────────────────────────
   pipe: { size: [1, 1], kind: 'pipe' },

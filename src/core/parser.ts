@@ -328,16 +328,42 @@ class Parser {
     if (token.kind === 'ident' && !RESERVED.has(token.text) && this.startsExpression(1)) {
       const labelLoc = token.loc
       const label = this.next().text
-      const value = this.parseExpr()
-      const arg: Arg = { label, labelLoc, value, loc: labelLoc }
-      if (value.kind === 'tuple') {
-        arg.asCall = { kind: 'call', callee: label, args: value.items.map((v) => ({ value: v, loc: v.loc })), loc: labelLoc }
+
+      // A parenthesised value is read as an argument list, so `content (iron-ore left)` keeps
+      // its pairing. It still reads as a tuple when every entry is bare, which is what
+      // `at (0, 0)` and `modules (a, b)` rely on.
+      if (this.at('(')) {
+        const mark = this.pos
+        const entries = this.parseArgList()
+
+        // Unless the expression carries on past the brackets, in which case they were only
+        // grouping: `gap (1 + 2) * 3`.
+        if (!this.continuesExpression()) {
+          const arg: Arg = {
+            label,
+            labelLoc,
+            value: { kind: 'tuple', items: entries.map((e) => e.value), loc: labelLoc },
+            entries,
+            loc: labelLoc,
+          }
+          arg.asCall = { kind: 'call', callee: label, args: entries, loc: labelLoc }
+          return arg
+        }
+        this.pos = mark
       }
-      return arg
+
+      return { label, labelLoc, value: this.parseExpr(), loc: labelLoc }
     }
 
     const value = this.parseExpr()
     return { value, loc: value.loc }
+  }
+
+  /** True when the next token would extend an expression that just ended. */
+  private continuesExpression(): boolean {
+    const token = this.peek()
+    if (token.kind === 'punct' && (token.text === '.' || token.text === '..')) return true
+    return (token.kind === 'punct' || token.kind === 'ident') && PRECEDENCE[token.text] !== undefined
   }
 
   // ── Expressions ─────────────────────────────────────────────────────────────

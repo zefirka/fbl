@@ -12,6 +12,7 @@ export type EnumName =
   | 'module-item'
   | 'entity'
   | 'routing'
+  | 'side'
 
 export type Type =
   | { k: 'int' }
@@ -21,6 +22,10 @@ export type Type =
   | { k: 'coord' }
   | { k: 'enum'; name: EnumName }
   | { k: 'module' }
+  /** `(iron-ore left, coal right)` — what a belt or a chest is carrying. Metadata only. */
+  | { k: 'content' }
+  /** `(copper-plate, copper-ore)` or `(not copper-plate, …)` — an inserter's item filters. */
+  | { k: 'filters' }
   | { k: 'handle' }
   | { k: 'array'; of: Type }
   | { k: 'tuple'; items: Type[] }
@@ -34,6 +39,8 @@ export const T = {
   text: { k: 'text' } as Type,
   coord: { k: 'coord' } as Type,
   module: { k: 'module' } as Type,
+  content: { k: 'content' } as Type,
+  filters: { k: 'filters' } as Type,
   handle: { k: 'handle' } as Type,
   any: { k: 'any' } as Type,
   void: { k: 'void' } as Type,
@@ -56,6 +63,9 @@ const NAMED_TYPES: Record<string, Type> = {
   recipe: T.enum('recipe'),
   item: T.enum('item'),
   module: T.module,
+  content: { k: 'content' } as Type,
+  filters: { k: 'filters' } as Type,
+  side: T.enum('side'),
   entity: T.enum('entity'),
   handle: T.handle,
   any: T.any,
@@ -140,6 +150,8 @@ export const TIERS = ['yellow', 'red', 'blue', 'green', 'normal', 'basic', 'fast
 export const UNDERGROUND_TYPES = ['input', 'output']
 export const ALIGNMENTS = ['start', 'center', 'end']
 export const ROUTINGS = ['auto', 'direct']
+/** Belt lanes and splitter priorities both name a side. */
+export const SIDES = ['left', 'right']
 
 /**
  * Which names are legal members of each type.
@@ -169,6 +181,8 @@ export class Universe {
         return ALIGNMENTS
       case 'routing':
         return ROUTINGS
+      case 'side':
+        return SIDES
       case 'recipe':
         return [...this.registry.recipes.keys()]
       case 'item':

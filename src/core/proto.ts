@@ -27,6 +27,8 @@ export interface Prototype {
   supplyArea?: number
   /** Draws electricity from the grid. */
   needsPower: boolean
+  /** Inventory slots, for chests. */
+  slots?: number
 }
 
 /** Friendly tier aliases, so `:green` works as well as `turbo-transport-belt`. */
@@ -104,6 +106,7 @@ export class ProtoRegistry {
         beltSpeed: item.belt?.speed,
         supplyArea: overrides?.supplyArea,
         needsPower: overrides?.powered ?? item.machine?.type === 'electric',
+        slots: overrides?.slots,
       })
     }
   }

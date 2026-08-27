@@ -136,7 +136,18 @@ export function analyze(text: string, offset: number, vocabulary: Vocabulary): C
     return { kind: 'defaults-slot', prefix }
   }
 
-  if (!frame.callee || !vocabulary.isCallable(frame.callee)) return { kind: 'none' }
+  if (!frame.callee || !vocabulary.isCallable(frame.callee)) {
+    // `content (…)`, `filter (…)`, `modules (…)`: these brackets belong to a slot, so what
+    // goes inside them is that slot's values.
+    const outer = stack[stack.length - 2]
+    if (frame.callee && outer?.callee && vocabulary.isCallable(outer.callee)) {
+      const outerSlots = vocabulary.slotsOf(outer.callee)
+      if (outerSlots?.includes(frame.callee)) {
+        return { kind: 'value', callee: outer.callee, slot: frame.callee, prefix }
+      }
+    }
+    return { kind: 'none' }
+  }
 
   const slots = vocabulary.slotsOf(frame.callee)
   if (last?.kind === 'ident' && slots?.includes(last.text)) {
