@@ -1,0 +1,66 @@
+# Builds the studio and publishes it to GitHub Pages.
+#
+# No game data is committed or deployed: the icon sheets are Wube's art, and FactorioLab
+# already serves the datasets with CORS open, so the browser fetches them from there at run
+# time. The entity sprite atlas is not deployed either — it is extracted from a local Factorio
+# installation and the deployed studio falls back to its schematic view.
+name: Deploy to Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # The tests read the datasets off disk, so they need a copy even though the deployed
+      # site does not ship one.
+      - name: Fetch game data
+        run: npm run fetch-data
+
+      - name: Test
+        run: npm test
+
+      # Vite copies public/ verbatim. Shipping a second copy of Wube's icon art would be both
+      # pointless and rude when FactorioLab already serves it with CORS open.
+      - name: Drop the datasets before building
+        run: rm -rf public/data && mkdir -p public/data && touch public/data/.gitkeep
+
+      - name: Build
+        run: npm run build
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -420,6 +420,27 @@ What to know before trusting it with a real base:
 5. A decompiler: blueprint string → source. The fastest way to a standard library is to
    read existing blueprint books back into blocks.
 
+## Deploying
+
+`.github/workflows/deploy.yml` builds the studio and publishes it to GitHub Pages on every
+push to `main`. It is a static site with no backend, so there is nothing else to run.
+
+Nothing derived from the game is committed or deployed:
+
+- **Datasets and icon sheets** are fetched at run time from
+  [FactorioLab](https://factoriolab.github.io), which serves them with
+  `access-control-allow-origin: *`. `npm run fetch-data` puts a local copy under `public/data/`
+  for development, and the loader prefers it whenever it is there. The CI job fetches a copy to
+  run the tests, then deletes it before building, because Vite copies `public/` verbatim and a
+  second copy of Wube's icon art on a public site would be both pointless and rude.
+- **The entity sprite atlas is local only.** It is extracted from your own Factorio
+  installation, so the deployed studio has no game art and falls back to its schematic view —
+  the **sprites** button is disabled there and says why. Everything else works: the language,
+  the checker, the cost panel, the power overlay.
+
+The build is ~14MB, almost all of it Monaco's lazily-loaded language chunks; the page itself
+pulls about 1MB gzipped.
+
 ## Where the data comes from
 
 | | source | produced by |
