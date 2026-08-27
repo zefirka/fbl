@@ -15,7 +15,7 @@ import { fetchBytes, type OnProgress } from '../data/progress'
 import { loadAtlas } from '../data/sprites'
 import { DEFAULT_VERSION, VERSIONS } from '../data/versions'
 import { BlueprintCanvas, type ViewMode } from './canvas'
-import { renderCost, type CostMode, type IconSheet } from './cost-panel'
+import { parseView, renderCost, type CostSection, type CostView, type IconSheet } from './cost-panel'
 import { renderDocs } from './docs'
 import { createEditor, type Editor } from './editor'
 import { EXAMPLES } from './examples'
@@ -60,10 +60,10 @@ const host: { registry: ProtoRegistry | null; blocks: BlockSignature[] } = { reg
 
 let source = readStorage(STORAGE_SOURCE) ?? EXAMPLES[0].source
 let blueprintText = ''
-let costMode: CostMode = (readStorage('fbl.cost') as CostMode) ?? 'raw'
+let costView: CostView = parseView(readStorage('fbl.cost'))
 let showPower = readStorage('fbl.power') === 'on'
 let iconSheet: IconSheet | null = null
-/** Kept so the cost panel can redraw when its tab changes, without recompiling. */
+/** Kept so the cost panel can redraw when a section opens, without recompiling. */
 let lastCost: ReturnType<typeof computeCost> | null = null
 /** Bumped on every dataset load so a slow one cannot clobber a newer one. */
 let generation = 0
@@ -181,7 +181,7 @@ function drawCost(): void {
     return
   }
   const registry = host.registry
-  dom.cost.innerHTML = renderCost(lastCost, costMode, {
+  dom.cost.innerHTML = renderCost(lastCost, costView, {
     icon: (name) => registry.icons.get(name),
     label: (name) => registry.itemLabels.get(name) ?? name,
     sheet: iconSheet,
@@ -190,10 +190,18 @@ function drawCost(): void {
 }
 
 dom.cost.addEventListener('click', (event) => {
-  const mode = (event.target as HTMLElement).closest('button')?.dataset.costMode
-  if (!mode) return
-  costMode = mode as CostMode
-  writeStorage('fbl.cost', costMode)
+  const button = (event.target as HTMLElement).closest('button')
+  if (!button) return
+
+  if (button.dataset.costToggle !== undefined) {
+    costView = { ...costView, collapsed: !costView.collapsed }
+  } else if (button.dataset.costSection) {
+    costView = { ...costView, section: button.dataset.costSection as CostSection }
+  } else {
+    return
+  }
+
+  writeStorage('fbl.cost', JSON.stringify(costView))
   drawCost()
 })
 

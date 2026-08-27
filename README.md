@@ -316,14 +316,30 @@ row 1, and eight of them had been sitting dark since the example was written.
 
 ## Cost
 
-The overlay in the corner of the preview totals the blueprint two ways: **items**, the bill of
-materials you would carry to the site, modules included; and **raw**, every recipe followed
-down to what the game extracts directly.
+The overlay in the corner of the preview totals the blueprint three ways. The × puts it away;
+clicking the pill that is left brings it back.
 
-That last distinction is not the same as "has no recipe". In Space Age `iron-ore` has a recipe
-of its own that grows it from bacteria — follow it and a transport belt is priced in
-biochambers. The trail stops wherever something *mines* an item or makes it from nothing,
-which is also why sulfuric acid and heavy oil turn up as raw: on some planets they are.
+| section | what it counts |
+| --- | --- |
+| `items` | what the schema places, modules included |
+| `basic` | those, followed down to the materials they are made of |
+| `raw` | those, followed all the way to what the game extracts |
+
+"Extracts" is not the same as "has no recipe". In Space Age `iron-ore` has a recipe of its own
+that grows it from bacteria — follow it and a transport belt is priced in biochambers. The
+trail stops wherever something *mines* an item or *grows* it or makes it from nothing, which is
+also why sulfuric acid and heavy oil turn up as raw: on some planets they are.
+
+A **material** is an item that is *processed* rather than assembled — its recipe runs in a
+furnace, a foundry, a chemical plant, a refinery — and that is made of nothing but raw
+resources and other materials. Both halves are load-bearing: a foundry casts turbo belts too,
+but out of gears and plates, so a belt is not a material. What survives is the tier you would
+actually shop for. For the smelters array that turns
+
+```
+raw     lava 17.4k · crude oil 15.1k · iron ore 12.7k · heavy oil 6240 · tungsten ore 3480
+basic   iron plate 10.7k · lubricant 6240 · copper plate 4728 · tungsten plate 870 · plastic 678
+```
 
 ## Versions
 

@@ -170,6 +170,24 @@ export const ROTATABLE_MACHINES = new Set([
   'thruster',
 ])
 
+/**
+ * Machines that assemble rather than process — the ones a recipe can use because it is a
+ * recipe, not because of what it does to the material. Everything else that crafts (furnaces,
+ * the foundry, chemical plants, refineries, centrifuges, biochambers, cryogenic plants) turns
+ * one substance into another, which is what marks the boundary between an ore and a plate.
+ *
+ * The electromagnetic plant belongs here despite its name: it is Fulgora's faster assembler,
+ * and it makes cables and circuits, not materials.
+ */
+export const ASSEMBLY_MACHINES = new Set([
+  'assembling-machine-1',
+  'assembling-machine-2',
+  'assembling-machine-3',
+  'electromagnetic-plant',
+  'rocket-silo',
+  'captive-biter-spawner',
+])
+
 /** `defines.inventory` index that modules go into, by machine family. */
 export function moduleInventoryFor(name: string): number {
   if (name.includes('mining-drill') || name === 'pumpjack') return 2 // MINING_DRILL_MODULES

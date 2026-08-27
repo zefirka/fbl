@@ -825,6 +825,50 @@ test('everything an example places has a known cost', () => {
   }
 })
 
+const basicOf = (source) => {
+  const { scene } = run(source)
+  return Object.fromEntries(computeCost(scene, registry).basic.map((e) => [e.item, e.amount]))
+}
+
+test('basic stops at the materials, one tier above the ore', () => {
+  // A belt is ½ plate plus a gear, which is another plate. The ore behind them is not shown.
+  assert.deepEqual(basicOf('transport-belt (at (0, 0))'), { 'iron-plate': 1.5 })
+
+  const furnace = basicOf('electric-furnace (at (0, 0))')
+  assert.deepEqual(Object.keys(furnace).sort(), [
+    'copper-plate',
+    'iron-plate',
+    'plastic-bar',
+    'steel-plate',
+    'stone-brick',
+  ])
+})
+
+test('a material is processed, not assembled, and made only of materials', () => {
+  // The foundry casts a turbo belt, but out of gears and plates — so it is not a material,
+  // and the panel keeps breaking it down.
+  const turbo = basicOf('turbo-transport-belt (at (0, 0))')
+  assert.equal(turbo['turbo-transport-belt'], undefined)
+  assert.ok(turbo['tungsten-plate'] > 0, 'the foundry casting the plate is a material')
+
+  // A gear runs in an assembler, so it is not where the trail stops either.
+  assert.deepEqual(basicOf('iron-chest (at (0, 0))'), { 'iron-plate': 8 })
+})
+
+test('growing counts as extraction, so fruit is raw', () => {
+  // Turbo belts need carbon fibre, which a biochamber grows the ingredients for.
+  const source = readFileSync(join(ROOT, 'examples', 'smelters-array.fbl'), 'utf8')
+  const cost = computeCost(run(source).scene, registry)
+  const raw = new Set(cost.raw.map((e) => e.item))
+
+  assert.ok(raw.has('yumako') && raw.has('jellynut'), 'the fruit is where the trail stops')
+  // A seed grows fruit that yields the seed back; without the plant flag that loop is what
+  // the walk would bottom out on.
+  for (const list of [cost.raw, cost.basic]) {
+    assert.deepEqual(list.filter((e) => e.item.endsWith('-seed')), [])
+  }
+})
+
 // ── Power coverage ────────────────────────────────────────────────────────────
 
 import { powerCoverage } from '../dist-node/core.mjs'

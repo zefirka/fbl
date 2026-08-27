@@ -292,13 +292,21 @@ power across a base, not for covering one. The one that covers ground is the
 <code>substation</code>.</p>
 
 <h2>Cost</h2>
-<p>The panel in the corner of the preview totals what the blueprint costs. <b>items</b> is the
-bill of materials — what you carry to the site, modules included. <b>raw</b> follows every
-recipe down to what the game extracts directly: ore, coal, stone, water, oil.</p>
+<p>The panel in the corner of the preview totals what the blueprint costs, at three depths.
+<b>items</b> is what the schema places, modules included. <b>basic</b> follows those down to
+the materials they are made of. <b>raw</b> keeps going, all the way to what the game extracts:
+ore, lava, oil, water, fruit. The × in the corner puts the panel away; clicking what is left
+of it brings it back.</p>
 <p>“Extracts directly” is doing real work there. It is not the same as “has no recipe”: in
 Space Age <code>iron-ore</code> has a recipe of its own that grows it from bacteria, and
 following that would price a transport belt in biochambers. The trail stops wherever something
-mines an item or makes it out of nothing.</p>
+mines an item or grows it, or makes it out of nothing.</p>
+<p>A <b>material</b> is an item that is <i>processed</i> rather than assembled — its recipe
+runs in a furnace, a foundry, a chemical plant, a refinery — and that is made of nothing but
+raw resources and other materials. Both halves matter: a foundry casts turbo belts too, but
+out of gears and plates, so a belt is not a material. What survives is the tier you would
+actually shop for — plates, steel, plastic, lubricant, tungsten plate — instead of the ore,
+lava and fruit underneath them.</p>
 
 <h2>What the checker catches</h2>
 <p>Parse → check → run. The checker is a gate: if it reports an error nothing is placed, so a
