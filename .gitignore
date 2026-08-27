@@ -3,5 +3,5 @@ dist/
 dist-node/
 .DS_Store
 public/data/*/
-!public/data/.gitkeep
 public/sprites/
+!public/data/.gitkeep

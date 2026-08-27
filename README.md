@@ -46,20 +46,17 @@ The editor is Monaco, wired to the language rather than to a syntax file:
 - **hover** — a machine's footprint, module slots and crafting speed; a recipe's ingredients
   and time; a block's parameters.
 
-### Real game art (optional)
-
-With Factorio installed, the preview can draw the actual entity sprites instead of coloured
-footprints:
+### Real game art
 
 ```bash
 "<factorio>/factorio.app/Contents/MacOS/factorio" --dump-data   # writes data-raw-dump.json
-npm run extract-sprites                                          # → public/sprites/ (~12MB)
+npm run extract-sprites                                          # → public/sprites/ (12MB)
 ```
 
 The extractor finds a Steam or /Applications install by itself; override with `--data` and
-`--dump`, or `FACTORIO_DATA` / `FACTORIO_DUMP`. `--ppt 32` halves the resolution and quarters
-the atlas. Without it the studio still runs — the **sprites / schematic** toggle simply stays
-on schematic.
+`--dump`, or `FACTORIO_DATA` / `FACTORIO_DUMP`. `--ppt 32` quarters the atlas at the cost of
+sharpness when zoomed in. Without an atlas the studio still runs — the **sprites / schematic**
+toggle just stays on schematic.
 
 ## Preview
 
@@ -425,21 +422,25 @@ What to know before trusting it with a real base:
 `.github/workflows/deploy.yml` builds the studio and publishes it to GitHub Pages on every
 push to `main`. It is a static site with no backend, so there is nothing else to run.
 
-Nothing derived from the game is committed or deployed:
+Game data is kept out of `main`, two different ways:
 
 - **Datasets and icon sheets** are fetched at run time from
   [FactorioLab](https://factoriolab.github.io), which serves them with
   `access-control-allow-origin: *`. `npm run fetch-data` puts a local copy under `public/data/`
-  for development, and the loader prefers it whenever it is there. The CI job fetches a copy to
-  run the tests, then deletes it before building, because Vite copies `public/` verbatim and a
-  second copy of Wube's icon art on a public site would be both pointless and rude.
-- **The entity sprite atlas is local only.** It is extracted from your own Factorio
-  installation, so the deployed studio has no game art and falls back to its schematic view —
-  the **sprites** button is disabled there and says why. Everything else works: the language,
-  the checker, the cost panel, the power overlay.
+  for development, and the loader prefers it whenever it is there. CI fetches a copy to run the
+  tests, then deletes it before building, because Vite copies `public/` verbatim.
+- **The sprite atlas lives on the `assets` branch.** It cannot be built in CI — the extractor
+  reads the game's own PNGs — so it has to be committed somewhere, and 12MB has no business in
+  the history of every clone of the source. The deploy workflow checks that branch out into
+  `public/sprites/` before building. To refresh it, run `npm run extract-sprites` on `main` and
+  push the result to `assets`.
 
-The build is ~14MB, almost all of it Monaco's lazily-loaded language chunks; the page itself
-pulls about 1MB gzipped.
+Nothing blocks on the art. The dataset is all that compiling needs, so the studio opens as soon
+as it lands; the icon sheet and the atlas stream in behind it with a progress chip in the
+corner, and the view upgrades from schematic to sprites when the atlas arrives.
+
+The build is ~14MB of code, almost all of it Monaco's lazily-loaded language chunks — the page
+itself pulls about 1MB gzipped, then the 12MB atlas in the background.
 
 ## Where the data comes from
 

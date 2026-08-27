@@ -11,6 +11,7 @@ import {
   type PlacedEntity,
 } from '../core'
 import { loadDataset } from '../data/loader'
+import { fetchBytes, type OnProgress } from '../data/progress'
 import { loadAtlas } from '../data/sprites'
 import { DEFAULT_VERSION, VERSIONS } from '../data/versions'
 import { BlueprintCanvas, type ViewMode } from './canvas'
@@ -18,6 +19,7 @@ import { renderCost, type CostMode, type IconSheet } from './cost-panel'
 import { renderDocs } from './docs'
 import { createEditor, type Editor } from './editor'
 import { EXAMPLES } from './examples'
+import { Preloader } from './preloader'
 
 const STORAGE_SOURCE = 'fbl.source'
 const STORAGE_VERSION = 'fbl.version'
@@ -34,6 +36,7 @@ const dom = {
   canvas: el<HTMLCanvasElement>('canvas'),
   tooltip: el('tooltip'),
   loading: el('loading'),
+  preload: el('preload'),
   console: el('console'),
   docs: el('docs'),
   cost: el('cost'),
@@ -50,6 +53,7 @@ const dom = {
 }
 
 const preview = new BlueprintCanvas(dom.canvas, dom.tooltip)
+const preloader = new Preloader(dom.loading, dom.preload)
 
 /** Shared with the language providers, which read it on every keystroke. */
 const host: { registry: ProtoRegistry | null; blocks: BlockSignature[] } = { registry: null, blocks: [] }
@@ -197,38 +201,50 @@ dom.cost.addEventListener('click', (event) => {
 
 async function selectVersion(id: string): Promise<void> {
   const mine = ++generation
-  dom.loading.hidden = false
-  dom.loading.textContent = `loading ${id}…`
+  preloader.begin(`loading ${id}…`)
   writeStorage(STORAGE_VERSION, id)
 
+  let loaded
   try {
-    const loaded = await loadDataset(id)
-    if (mine !== generation) return
-
-    host.registry = new ProtoRegistry(loaded.data, loaded.profile)
-    const icons = await loadImage(loaded.iconsUrl)
-    iconSheet = icons ? { url: loaded.iconsUrl, width: icons.naturalWidth, height: icons.naturalHeight } : null
-    preview.setIcons(icons, (name: string) => host.registry?.icons.get(name))
-    dom.docs.innerHTML = renderDocs(host.registry)
-    dom.loading.hidden = true
-    build()
-    preview.fit()
+    loaded = await loadDataset(id)
   } catch (error) {
     if (mine !== generation) return
-    dom.loading.hidden = true
-    dom.console.replaceChildren()
-    log('error', error instanceof Error ? error.message : String(error))
+    preloader.fail(error instanceof Error ? error.message : String(error))
+    return
   }
+  if (mine !== generation) return
+
+  // The dataset is all that compiling needs, so the studio opens now and the art catches up.
+  host.registry = new ProtoRegistry(loaded.data, loaded.profile)
+  dom.docs.innerHTML = renderDocs(host.registry)
+  preloader.done()
+  build()
+  preview.fit()
+
+  const iconsUrl = loaded.iconsUrl
+  void loadImage(iconsUrl, preloader.track(`icons:${id}`, 'item icons')).then((icons) => {
+    preloader.finish(`icons:${id}`)
+    if (mine !== generation) return
+    iconSheet = icons ? { url: iconsUrl, width: icons.naturalWidth, height: icons.naturalHeight } : null
+    preview.setIcons(icons, (name: string) => host.registry?.icons.get(name))
+    drawCost()
+  })
 }
 
-function loadImage(url: string): Promise<HTMLImageElement | null> {
-  return new Promise((resolve) => {
-    const image = new Image()
-    image.onload = () => resolve(image)
-    // Missing art is not fatal — entities still render as tinted footprints.
-    image.onerror = () => resolve(null)
-    image.src = url
+async function loadImage(url: string, onProgress?: OnProgress): Promise<HTMLImageElement | null> {
+  const blob = await fetchBytes(url, onProgress)
+  // Missing art is not fatal — entities still render as tinted footprints.
+  if (!blob) return null
+
+  const objectUrl = URL.createObjectURL(blob)
+  const image = await new Promise<HTMLImageElement | null>((resolve) => {
+    const element = new Image()
+    element.onload = () => resolve(element)
+    element.onerror = () => resolve(null)
+    element.src = objectUrl
   })
+  URL.revokeObjectURL(objectUrl)
+  return image
 }
 
 // ── Wiring ────────────────────────────────────────────────────────────────────
@@ -303,9 +319,13 @@ dom.tabs.addEventListener('click', (event) => {
 
 // ── View mode ─────────────────────────────────────────────────────────────────
 
-function setMode(mode: ViewMode): void {
+/**
+ * `remember` is false when the studio falls back on its own — a visitor who arrives before
+ * the atlas exists should not be left preferring the schematic view forever.
+ */
+function setMode(mode: ViewMode, remember = true): void {
   preview.setMode(mode)
-  writeStorage(STORAGE_MODE, mode)
+  if (remember) writeStorage(STORAGE_MODE, mode)
   for (const button of dom.view.querySelectorAll('button')) {
     button.classList.toggle('active', button.dataset.mode === mode)
   }
@@ -316,7 +336,8 @@ dom.view.addEventListener('click', (event) => {
   if (button?.dataset.mode) setMode(button.dataset.mode as ViewMode)
 })
 
-void loadAtlas().then((atlas) => {
+void loadAtlas(preloader.track('sprites', 'entity sprites')).then((atlas) => {
+  preloader.finish('sprites')
   preview.setAtlas(atlas)
   if (!atlas) {
     // Without a local Factorio install there is no art to show; schematic is the only view.
@@ -326,7 +347,7 @@ void loadAtlas().then((atlas) => {
         button.title = 'run `npm run extract-sprites` with Factorio installed'
       }
     }
-    setMode('schematic')
+    setMode('schematic', false)
     return
   }
   dom.view.title = `game art from Factorio ${atlas.manifest.gameVersion}`

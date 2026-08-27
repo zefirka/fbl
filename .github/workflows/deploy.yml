@@ -1,9 +1,9 @@
 # Builds the studio and publishes it to GitHub Pages.
 #
-# No game data is committed or deployed: the icon sheets are Wube's art, and FactorioLab
-# already serves the datasets with CORS open, so the browser fetches them from there at run
-# time. The entity sprite atlas is not deployed either — it is extracted from a local Factorio
-# installation and the deployed studio falls back to its schematic view.
+# Datasets are not committed: FactorioLab serves them with CORS open, so the browser fetches
+# them at run time and CI only needs a copy for the tests. The sprite atlas is committed, but
+# to the `assets` branch rather than to `main` — it cannot be built here, and 12MB has no
+# business in the history of every clone of the source.
 name: Deploy to Pages
 
 on:
@@ -45,6 +45,14 @@ jobs:
       # pointless and rude when FactorioLab already serves it with CORS open.
       - name: Drop the datasets before building
         run: rm -rf public/data && mkdir -p public/data && touch public/data/.gitkeep
+
+      # The sprite atlas cannot be built here — the extractor reads the game's own PNGs — so it
+      # lives on the `assets` branch instead of weighing down every clone of the source.
+      - name: Fetch the sprite atlas
+        run: |
+          git fetch --depth 1 origin assets
+          git checkout FETCH_HEAD -- public/sprites
+          du -sh public/sprites
 
       - name: Build
         run: npm run build

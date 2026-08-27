@@ -288,3 +288,54 @@ button.ghost.active { color: #7fb8ff; border-color: #3a5a86; background: #1d2836
 .cost-more { color: var(--text-dim); font-size: 10px; padding-top: 3px; }
 .cost-note { color: #5d6673; font-size: 10px; line-height: 1.4; padding-top: 5px; }
 .cost-warn { color: var(--warn); }
+
+/* ── Preloader ────────────────────────────────────────────────────────────── */
+
+.preload {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  width: 190px;
+  padding: 8px 10px;
+  background: rgba(20, 23, 28, 0.92);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+  z-index: 4;
+}
+.preload[hidden] { display: none; }
+
+.preload-row { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; }
+.preload-row + .preload-row { margin-top: 7px; }
+.preload-label { color: var(--text-dim); }
+.preload-size { color: var(--text); font-variant-numeric: tabular-nums; }
+
+.preload-track {
+  grid-column: 1 / -1;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--bg-raised);
+  overflow: hidden;
+}
+
+.preload-bar {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 120ms linear;
+}
+
+/* No content-length: slide a short bar instead of pretending to know the percentage. */
+.preload-bar-unknown {
+  width: 35%;
+  animation: preload-drift 1.1s ease-in-out infinite alternate;
+}
+
+@keyframes preload-drift {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(285%); }
+}
