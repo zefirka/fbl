@@ -49,7 +49,10 @@ jobs:
       - name: Build
         run: npm run build
 
+      # `enablement` turns Pages on the first time, so no manual trip to Settings.
       - uses: actions/configure-pages@v5
+        with:
+          enablement: true
 
       - uses: actions/upload-pages-artifact@v3
         with:
