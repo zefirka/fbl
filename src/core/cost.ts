@@ -7,10 +7,14 @@ import type { Scene } from './scene'
  * What a blueprint costs, at three depths: the things you place, the materials they are made
  * of, and the resources behind those.
  *
- * Recipes are followed down until they reach a frontier. For `raw` that frontier is what the
- * game extracts: an item is raw when something mines it or makes it from nothing — which is
- * not the same as "has no recipe", since in Space Age `iron-ore` has a recipe of its own that
- * grows it from bacteria, and following that would price a belt in biochambers.
+ * Recipes are followed down until they reach a frontier. For `raw` that frontier is what
+ * enters the world rather than being crafted: something mines it, grows it, makes it from
+ * nothing — or nothing makes it at all. That last case is not a hole in the data. Wood is
+ * chopped from trees and holmium ore comes out of scrap, which this model does not follow, so
+ * both simply are where the trail stops.
+ *
+ * Being raw is not the same as having no recipe: in Space Age `iron-ore` has one of its own
+ * that grows it from bacteria, and following that would price a belt in biochambers.
  *
  * `basic` stops one tier earlier, at the materials. A material is an item that is *processed*
  * rather than assembled — its recipe runs in a furnace, foundry, chemical plant, refinery or
@@ -31,8 +35,6 @@ export interface Cost {
   basic: CostEntry[]
   /** Those, followed all the way down to ore, coal, stone, water and oil. */
   raw: CostEntry[]
-  /** Items nothing in the dataset produces, so their cost is unknown. */
-  unresolved: string[]
 }
 
 /** Recipes that make an item out of something it already was, or out of research. */
@@ -68,6 +70,10 @@ function indexOf(registry: ProtoRegistry): RecipeIndex {
       else producers.set(item, [recipe])
     }
   }
+
+  // Anything nothing makes is where a trail stops, the same as ore: wood in 1.1, holmium ore
+  // in Space Age.
+  for (const item of registry.itemLabels.keys()) if (!producers.has(item)) raw.add(item)
 
   const index: RecipeIndex = { producers, raw, basic: new Set() }
   for (const item of producers.keys()) if (isBasic(item, index, new Set())) index.basic.add(item)
@@ -115,7 +121,6 @@ function breakdown(
   frontier: (item: string) => boolean,
   memo: Map<string, Map<string, number>>,
   visiting: Set<string>,
-  unresolved: Set<string>,
 ): Map<string, number> {
   const done = memo.get(item)
   if (done) return done
@@ -131,7 +136,6 @@ function breakdown(
 
   const recipe = recipeFor(index, item)
   if (!recipe) {
-    unresolved.add(item)
     single.set(item, 1)
     memo.set(item, single)
     return single
@@ -142,7 +146,7 @@ function breakdown(
 
   for (const [ingredient, count] of Object.entries(recipe.in ?? {})) {
     const per = count / produced
-    for (const [resource, amount] of breakdown(ingredient, index, frontier, memo, visiting, unresolved)) {
+    for (const [resource, amount] of breakdown(ingredient, index, frontier, memo, visiting)) {
       single.set(resource, (single.get(resource) ?? 0) + amount * per)
     }
   }
@@ -164,13 +168,12 @@ export function computeCost(scene: Scene, registry: ProtoRegistry): Cost {
   }
 
   const index = indexOf(registry)
-  const unresolved = new Set<string>()
 
   const total = (frontier: (item: string) => boolean): CostEntry[] => {
     const memo = new Map<string, Map<string, number>>()
     const sum = new Map<string, number>()
     for (const [item, count] of bill) {
-      for (const [resource, amount] of breakdown(item, index, frontier, memo, new Set(), unresolved)) {
+      for (const [resource, amount] of breakdown(item, index, frontier, memo, new Set())) {
         sum.set(resource, (sum.get(resource) ?? 0) + amount * count)
       }
     }
@@ -181,6 +184,5 @@ export function computeCost(scene: Scene, registry: ProtoRegistry): Cost {
     items: [...bill].map(([item, amount]) => ({ item, amount })).sort(byAmount),
     basic: total((item) => index.raw.has(item) || index.basic.has(item)),
     raw: total((item) => index.raw.has(item)),
-    unresolved: [...unresolved].sort(),
   }
 }

@@ -129,7 +129,7 @@ export function analyze(text: string, offset: number, vocabulary: Vocabulary): C
   }
 
   if (frame.callee === 'defaults' || frame.before === 'defaults') {
-    const slots = ['tier', 'quality', 'dir', 'recipe', 'modules', 'gap', 'align']
+    const slots = ['tier', 'quality', 'dir', 'recipe', 'modules', 'gap', 'align', 'route']
     if (last?.kind === 'ident' && slots.includes(last.text)) {
       return { kind: 'value', callee: frame.callee ?? 'defaults', slot: last.text, prefix }
     }

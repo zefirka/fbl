@@ -1,0 +1,38 @@
+; ─────────────────────────────────────────────────────────────────────────────
+; The standard library. `import` puts its blocks in the same namespace as the
+; entities — no prefix, no aliasing. Nothing arrives until you ask for it: use
+; `balancer` without the import and the error says where it lives.
+; ─────────────────────────────────────────────────────────────────────────────
+
+import "stdlib"
+
+defaults (tier blue)
+
+; ── balancer ─────────────────────────────────────────────────────────────────
+; Every N→M from 1 to 8, expanded from a library of ready-made blueprints. The
+; interpreter builds these itself; they are in the library rather than in the
+; language because nothing else needs a data file to place a hundred entities.
+balancer (at (0, 0), 4 to 4)          ; 4×10
+balancer (at (0, 12), 2 to 4, green)  ; 4×4
+
+; ── side-buffer ──────────────────────────────────────────────────────────────
+; A row of boxes, an inserter between each neighbouring pair, one feeding the
+; first and one drawing out of the last. This one is written in fbl — read it
+; with `import "stdlib"` in mind and nothing about it is special.
+side-buffer (at (7, 0), size 4)
+
+; The boxes measure themselves, so the spacing follows whatever you hand it.
+side-buffer (at (7, 4), box iron-chest, inserter fast-inserter, size 3)
+side-buffer (at (7, 8), box storage-tank, size 3)
+
+; ── line-buffer ──────────────────────────────────────────────────────────────
+; The same parts arranged the other way: an inserter, a box, an inserter, a box,
+; and one on the end. A side-buffer holds things beside a line; a line-buffer
+; hands them along it.
+line-buffer (at (7, 14), size 4)
+line-buffer (at (7, 16), box iron-chest, inserter fast-inserter, size 3)
+line-buffer (at (7, 18), box storage-tank, size 2)
+
+; Both have their own guard: ask for too few boxes and they refuse rather than
+; building nonsense.
+; side-buffer (at (7, 22), size 1)      ; size must be at least 2

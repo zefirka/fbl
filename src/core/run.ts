@@ -1,5 +1,6 @@
 import { argForm } from './args'
 import { readContent, readFilters } from './metadata'
+import { MODULES, moduleOffering } from './modules'
 import { BALANCER_LIMIT, balancerLayout, BELT, SPLITTER, UNDERGROUND } from './balancer'
 import type { Arg, Expr, Module, Param, Stmt } from './ast'
 import { fail, type Loc } from './errors'
@@ -16,17 +17,27 @@ import {
   type Vec,
 } from './geometry'
 import type { Prototype, ProtoRegistry } from './proto'
-import { planRoute, type RouteStep } from './routing'
-import { Scene, type ContentEntry, type FilterSpec, type ModuleSpec } from './scene'
-import { bareSlot, blockSlots, entitySlots, findSlot, HELPER_SLOTS, LAYOUT_SLOTS, type SlotDef } from './slots'
-import { tileIndex } from './topology'
-import { ALIGNMENTS, ROUTINGS, T, TIERS, UNDERGROUND_TYPES, type Type } from './types'
+import { planRoute, type RouteResult, type RouteStep, type TileState } from './routing'
+import { Scene, type ContentEntry, type FilterSpec, type ModuleSpec, type SceneTransform } from './scene'
+import { bareSlot, blockSlots, entitySlots, findSlot, HELPER_SLOTS, LAYOUT_SLOTS, type SlotDef, DEFAULT_SLOTS } from './slots'
+import { flowsWith, LINE_KINDS, tileIndex, type TileIndex } from './topology'
+import { ALIGNMENTS, ROUTINGS, T, TIERS, TRANSFORMS, UNDERGROUND_TYPES, type Type } from './types'
 import { EnumValue, isHandle, makeHandle, show, type Handle, type Value } from './values'
 
 interface BlockDef {
   name: string
   params: Param[]
   body: Stmt[]
+}
+
+/** A belt written with `auto`, waiting for the finished blueprint before it decides. */
+interface AutoRun {
+  /** Where its tiles start in the scene; the path maps onto them one for one. */
+  from: number
+  path: Vec[]
+  underground: Prototype
+  reach: number
+  loc: Loc
 }
 
 interface DefaultEntry {
@@ -62,6 +73,18 @@ export class Runtime {
   readonly output: string[] = []
 
   private readonly blocks = new Map<string, BlockDef>()
+  /** Block calls being evaluated, innermost last, so `throw` can point at the caller. */
+  private readonly callStack: Array<{ name: string; loc: Loc }> = []
+  /**
+   * `auto` belts, laid plainly as they are met and routed once the program has finished.
+   *
+   * Routing needs to know what the belt runs past, and a program is read top to bottom — so
+   * deciding as we go would mean a belt only ever saw the half of the blueprint written above
+   * it, and moving a splitter three lines up would change what got built. The tiles go down
+   * straight away, which keeps handles and layout measurement honest, and only the choice
+   * between belt, tunnel and nothing waits for the end.
+   */
+  private readonly autoRuns: AutoRun[] = []
   /** Innermost last. Each `defaults` statement pushes a frame for its scope. */
   private readonly defaults: DefaultEntry[][] = [[]]
   /**
@@ -71,7 +94,16 @@ export class Runtime {
    */
   private iterationSink: ((from: number, to: number) => void) | null = null
 
-  constructor(readonly registry: ProtoRegistry) {}
+  /** Native helpers the imported libraries unlock. */
+  private readonly unlocked: Set<string>
+
+  constructor(
+    readonly registry: ProtoRegistry,
+    /** Libraries this program imported. */
+    private readonly imported: ReadonlySet<string> = new Set(),
+  ) {
+    this.unlocked = new Set([...imported].flatMap((name) => MODULES[name]?.helpers ?? []))
+  }
 
   run(module: Module): RunResult {
     this.scene = new Scene()
@@ -86,7 +118,9 @@ export class Runtime {
     }
 
     const scope = new Scope()
+    this.autoRuns.length = 0
     this.runStatements(module.statements, scope)
+    this.settleAutoRuns()
     return { scene: this.scene, output: [...this.output] }
   }
 
@@ -110,9 +144,15 @@ export class Runtime {
       case 'defaults': {
         const entries: DefaultEntry[] = []
         for (const arg of statement.args) {
-          const form = argForm(arg, [], (name) => this.isCallable(name))
-          if (!form.slotName) continue
-          entries.push({ target: statement.target, slot: form.slotName, value: this.evaluate(form.expr, scope) })
+          const form = argForm(arg, DEFAULT_SLOTS, (name) => this.isCallable(name))
+          const value = this.evaluate(form.expr, scope)
+
+          // Unlabelled values find their slot by type, exactly as the checker read them.
+          const type = form.slotName ? undefined : typeOfValue(value)
+          const slot = form.slotName ?? (type ? bareSlot(DEFAULT_SLOTS, type)?.name : undefined)
+          if (!slot) continue
+
+          entries.push({ target: statement.target, slot, value })
         }
 
         if (statement.body) {
@@ -157,6 +197,29 @@ export class Runtime {
         this.runLayout(statement, scope)
         return
 
+      case 'throw': {
+        const value = this.evaluate(statement.value, scope)
+        // A tuple reads as one message with spaces between the parts, like `print`.
+        const message = Array.isArray(value) ? value.map(show).join(' ') : show(value)
+
+        // The mistake is at the call, not at the guard that caught it, so that is where the
+        // error goes — with the guard named, so it is clear which rule was broken.
+        const call = this.callStack[this.callStack.length - 1]
+        if (call) {
+          // A library's line numbers mean nothing to someone reading their own file, so name
+          // the library instead.
+          const library = moduleOffering(call.name)
+          const where =
+            library && this.imported.has(library) ? `from ${library}` : `on line ${statement.loc.line}`
+          fail(message, call.loc, `thrown by '${call.name}' ${where}`)
+        }
+        fail(message, statement.loc)
+      }
+
+      case 'import':
+        // Resolved before running, by putting the library's statements in front.
+        return
+
       case 'expr':
         this.evaluate(statement.expr, scope)
     }
@@ -194,7 +257,7 @@ export class Runtime {
       this.registry.entities.has(name) ||
       name === 'belt' ||
       name === 'underground' ||
-      name === 'balancer'
+      (name === 'balancer' && this.unlocked.has('balancer'))
     )
   }
 
@@ -214,36 +277,64 @@ export class Runtime {
       return this.inFrame(addVec(this.offset, delta), () => this.runStatements(statement.body, scope.child()))
     }
 
+    if (statement.form === 'transform') {
+      const apply = memberOf(filled.get('apply'))
+      if (!apply || !TRANSFORMS.includes(apply)) {
+        fail(`transform needs one of ${TRANSFORMS.join(', ')}`, statement.loc)
+      }
+      // Build it the plain way round first, then turn what came out: everything inside sees an
+      // ordinary frame, so `auto` and the layout forms need to know nothing about this.
+      const from = this.scene.length
+      this.inFrame(this.offset, () => this.runStatements(statement.body, scope.child()))
+      this.scene.transform(from, this.scene.length, apply as SceneTransform)
+      return rectHandle(this.scene.bbox(from, this.scene.length))
+    }
+
     const axis = statement.form === 'row' ? 'x' : 'y'
     const cross = axis === 'x' ? 'y' : 'x'
     const mainSize = axis === 'x' ? 'w' : 'h'
     const crossSize = axis === 'x' ? 'h' : 'w'
     const gap = typeof filled.get('gap') === 'number' ? (filled.get('gap') as number) : 0
     const alignValue = filled.get('align')
-    const align = alignValue instanceof EnumValue ? alignValue.member : 'start'
+    // No `align` means the author's own cross-axis placement stands.
+    const align = alignValue instanceof EnumValue ? alignValue.member : null
 
     const origin = this.offset
     const start = this.scene.length
-    const ranges: Array<{ from: number; to: number; crossExtent: number }> = []
+    const ranges: Array<{ from: number; to: number; crossStart: number; crossExtent: number }> = []
+    /** Where the first item's box began; everything after it is packed against that. */
+    let natural: number | null = null
     let cursor = 0
 
     /**
      * Settle one item into place and move the frame to where the next one begins. Positioning
      * as we go, rather than collecting everything and shifting at the end, is what lets a
      * belt's `auto` see its neighbours where they will actually stand.
+     *
+     * A layout only packs along its own axis. The first item stays exactly where it was
+     * written and each one after it starts a gap past the one before; nothing is moved across
+     * the axis unless `align` asks for it. A machine the author put above the line is meant to
+     * be above the line, and a belt written next to the layout can count on finding it there.
      */
     const settle = (from: number, to: number) => {
       if (to === from) return
       const box = this.scene.bbox(from, to)!
 
-      const dMain = origin[axis] + cursor - box[axis]
-      this.scene.translate(from, to, axis === 'x' ? dMain : 0, axis === 'y' ? dMain : 0)
-      const dCross = origin[cross] - box[cross]
-      this.scene.translate(from, to, cross === 'x' ? dCross : 0, cross === 'y' ? dCross : 0)
+      if (natural === null) {
+        natural = box[axis]
+        cursor = box[axis]
+      }
 
-      ranges.push({ from, to, crossExtent: box[crossSize] })
+      const dMain = cursor - box[axis]
+      if (dMain) this.scene.translate(from, to, axis === 'x' ? dMain : 0, axis === 'y' ? dMain : 0)
+
+      ranges.push({ from, to, crossStart: box[cross], crossExtent: box[crossSize] })
       cursor += box[mainSize] + gap
-      this.offset = axis === 'x' ? vec(origin.x + cursor, origin.y) : vec(origin.x, origin.y + cursor)
+
+      // Put the frame where the next item's own coordinates will land it in place, so that
+      // `auto` inside it already sees the truth.
+      const ahead = cursor - natural
+      this.offset = axis === 'x' ? vec(origin.x + ahead, origin.y) : vec(origin.x, origin.y + ahead)
     }
 
     try {
@@ -277,11 +368,15 @@ export class Runtime {
       this.offset = origin
     }
 
-    if (align === 'center' || align === 'end') {
-      const widest = Math.max(0, ...ranges.map((r) => r.crossExtent))
+    if (align && ranges.length) {
+      // Alignment is measured against the items themselves, not against the frame, so it
+      // means the same thing wherever the layout sits.
+      const front = Math.min(...ranges.map((r) => r.crossStart))
+      const widest = Math.max(...ranges.map((r) => r.crossExtent))
       for (const range of ranges) {
         const slack = widest - range.crossExtent
-        const shift = align === 'center' ? Math.floor(slack / 2) : slack
+        const offset = align === 'start' ? 0 : align === 'center' ? Math.floor(slack / 2) : slack
+        const shift = front + offset - range.crossStart
         if (shift) this.scene.translate(range.from, range.to, cross === 'x' ? shift : 0, cross === 'y' ? shift : 0)
       }
     }
@@ -309,13 +404,27 @@ export class Runtime {
         return expr.value
       case 'text':
         return expr.value
-      case 'tuple':
-        return expr.items.map((item) => this.evaluate(item, scope))
+      case 'tuple': {
+        // An item may itself be `name (…)`: a nested call, not a label.
+        const items = expr.entries
+          ? expr.entries.map((entry) =>
+              entry.asCall && entry.label && this.isCallable(entry.label) ? entry.asCall : entry.value,
+            )
+          : expr.items
+        return items.map((item) => this.evaluate(item, scope))
+      }
 
       case 'name': {
         const bound = scope.get(expr.name)
         if (bound) return bound.value
         return new EnumValue(this.enumOf(expr.name), expr.name)
+      }
+
+      case 'ternary': {
+        const condition = this.evaluate(expr.condition, scope)
+        // Truthiness as `if` reads it: only false and nothing are false.
+        const taken = condition !== false && condition !== null ? expr.then : expr.otherwise
+        return this.evaluate(taken, scope)
       }
 
       case 'range': {
@@ -362,6 +471,7 @@ export class Runtime {
     if (this.registry.qualities.includes(name)) return 'quality'
     if (UNDERGROUND_TYPES.includes(name)) return 'underground-type'
     if (ALIGNMENTS.includes(name)) return 'align'
+    if (TRANSFORMS.includes(name)) return 'transform'
     if (ROUTINGS.includes(name)) return 'routing'
     if (this.registry.modules.has(name)) return 'item'
     if (this.registry.recipes.has(name)) return 'recipe'
@@ -446,8 +556,12 @@ export class Runtime {
 
     const builtin = BUILTINS[expr.callee]
     if (builtin) {
+      // A function takes plain values, so `count (xs)` inside one is a nested call, not a
+      // label with a parenthesised value.
       return builtin(
-        expr.args.map((arg) => this.evaluate(arg.value, scope)),
+        expr.args.map((arg) =>
+          this.evaluate(arg.asCall && arg.label && this.isCallable(arg.label) ? arg.asCall : arg.value, scope),
+        ),
         this,
         expr.loc,
       )
@@ -461,7 +575,9 @@ export class Runtime {
 
     if (expr.callee === 'belt') return this.placeBelt(expr.args, scope, expr.loc)
     if (expr.callee === 'underground') return this.placeUnderground(expr.args, scope, expr.loc)
-    if (expr.callee === 'balancer') return this.placeBalancer(expr.args, scope, expr.loc)
+    if (expr.callee === 'balancer' && this.unlocked.has('balancer')) {
+      return this.placeBalancer(expr.args, scope, expr.loc)
+    }
 
     return fail(`unknown name '${expr.callee}'`, expr.loc)
   }
@@ -557,7 +673,12 @@ export class Runtime {
     }
 
     const at = filled.has('at') ? this.toVec(filled.get('at')!, 'at', loc) : vec(0, 0)
-    return this.inFrame(addVec(this.offset, at), () => this.runStatements(block.body, inner), block.name)
+    this.callStack.push({ name: block.name, loc })
+    try {
+      return this.inFrame(addVec(this.offset, at), () => this.runStatements(block.body, inner), block.name)
+    } finally {
+      this.callStack.pop()
+    }
   }
 
   private placeEntity(proto: Prototype, args: Arg[], scope: Scope, loc: Loc): Handle {
@@ -652,14 +773,8 @@ export class Runtime {
     const from = this.scene.length
 
     const routing = memberOf(filled.get('route')) ?? 'direct'
-    const steps =
-      routing === 'auto' ? this.routeUnder(path, filled, loc) : (path.map(() => 'belt') as RouteStep[])
-
-    const undergroundProto = routing === 'auto' ? this.beltProto('underground', filled, loc) : undefined
 
     for (let i = 0; i < path.length; i++) {
-      if (steps[i] === 'skip') continue
-
       const next = path[i + 1]
       const previous = path[i - 1]
       const dir = next
@@ -668,15 +783,18 @@ export class Runtime {
           ? directionBetween(previous, path[i])!
           : fallbackDir
 
-      if (steps[i] === 'belt') {
-        this.scene.place(proto, path[i].x, path[i].y, dir, { content, loc })
-      } else {
-        this.scene.place(undergroundProto!, path[i].x, path[i].y, dir, {
-          undergroundType: steps[i] === 'in' ? 'input' : 'output',
-          content,
-          loc,
-        })
-      }
+      this.scene.place(proto, path[i].x, path[i].y, dir, { content, loc })
+    }
+
+    if (routing === 'auto') {
+      const underground = this.beltProto('underground', filled, loc)
+      this.autoRuns.push({
+        from,
+        path,
+        underground,
+        reach: underground.undergroundReach ?? 0,
+        loc,
+      })
     }
 
     return rectHandle(this.scene.bbox(from, this.scene.length), {
@@ -687,37 +805,86 @@ export class Runtime {
     })
   }
 
-  /** `auto`: tunnel under whatever is already standing on the path. */
-  private routeUnder(path: Vec[], filled: Map<string, Value>, loc: Loc): RouteStep[] {
-    const underground = this.beltProto('underground', filled, loc)
-    const reach = underground.undergroundReach ?? 0
+  /** Which way the belt leaves this tile; the last tile keeps the heading of the one before. */
+  private headingAt(path: Vec[], i: number): number | undefined {
+    const ahead = path[i + 1] ? directionBetween(path[i], path[i + 1]) : undefined
+    return ahead ?? (path[i - 1] ? directionBetween(path[i - 1], path[i]) : undefined)
+  }
 
-    // Only what was placed before this belt counts; `auto` routes around existing work.
-    const occupied = tileIndex(this.scene.entities, () => true)
-    const blocked = path.map((p) => occupied.has(`${p.x},${p.y}`))
+  /**
+   * Routes every `auto` belt now that the whole blueprint stands, in the order they were
+   * written. Each one sees the finished scene apart from the runs still waiting their turn,
+   * so a belt yields to one written above it and never to one written below.
+   */
+  private settleAutoRuns(): void {
+    if (this.autoRuns.length === 0) return
 
-    const plan = planRoute(path, blocked, reach)
-    if (plan.ok) return plan.steps
+    const waiting = new Set<number>()
+    for (const run of this.autoRuns) {
+      for (let i = 0; i < run.path.length; i++) waiting.add(run.from + i)
+    }
+    const dropped = new Set<number>()
 
+    for (const run of this.autoRuns) {
+      for (let i = 0; i < run.path.length; i++) waiting.delete(run.from + i)
+
+      const standing = this.scene.entities.filter(
+        (_, index) => !waiting.has(index) && !dropped.has(index) && !this.isRunTile(run, index),
+      )
+      const occupied = tileIndex(standing, () => true)
+
+      const tiles: TileState[] = run.path.map((point, i) => {
+        const there = occupied.get(`${point.x},${point.y}`)
+        if (!there) return 'free'
+        return flowsWith(there, this.headingAt(run.path, i)) ? 'through' : 'blocked'
+      })
+
+      const plan = planRoute(run.path, tiles, run.reach)
+      if (!plan.ok) this.reportRoute(plan, occupied, run)
+
+      for (let i = 0; i < run.path.length; i++) {
+        const entity = this.scene.entities[run.from + i]
+        const step = (plan as { steps: RouteStep[] }).steps[i]
+
+        if (step === 'skip') dropped.add(run.from + i)
+        else if (step === 'in' || step === 'out') {
+          entity.proto = run.underground
+          entity.undergroundType = step === 'in' ? 'input' : 'output'
+        }
+      }
+    }
+
+    if (dropped.size) this.scene.remove(dropped)
+  }
+
+  private isRunTile(run: AutoRun, index: number): boolean {
+    return index >= run.from && index < run.from + run.path.length
+  }
+
+  /** Turns a routing failure into something the author can act on. */
+  private reportRoute(plan: Extract<RouteResult, { ok: false }>, occupied: TileIndex, run: AutoRun): never {
     const where = `(${plan.at.x}, ${plan.at.y})`
+    const standing = occupied.get(`${plan.at.x},${plan.at.y}`)
+    const what = standing ? standing.proto.label : 'something'
+    // A line pointing the other way is the one that catches people out: a belt joins one
+    // going its own way, so the mismatch is worth saying out loud.
+    const crosswise =
+      standing && LINE_KINDS.has(standing.proto.kind)
+        ? `it runs ${directionName(standing.dir)}; a belt merges into a line going its own way and tunnels under any other`
+        : undefined
+
     switch (plan.reason) {
       case 'starts-blocked':
-        fail(`the belt starts on something at ${where}`, loc, 'a tunnel needs a free tile to dive from')
+        fail(`the belt starts on ${what} at ${where}`, run.loc, crosswise ?? 'a tunnel needs a free tile to dive from')
       case 'ends-blocked':
-        fail(`the belt ends on something at ${where}`, loc, 'a tunnel needs a free tile to surface on')
-      case 'no-room':
-        fail(
-          `two obstacles too close together at ${where}`,
-          loc,
-          'one tile cannot be both the exit of a tunnel and the entry of the next',
-        )
+        fail(`the belt ends on ${what} at ${where}`, run.loc, crosswise ?? 'a tunnel needs a free tile to surface on')
       case 'turns':
-        fail(`the belt turns at ${where}, where it has to tunnel`, loc, 'move the corner clear of the obstacle')
+        fail(`the belt turns at ${where}, where it has to tunnel`, run.loc, 'move the corner clear of the obstacle')
       case 'too-far':
         fail(
-          `${plan.needed} tiles to tunnel at ${where}, but ${underground.label} reaches ${reach}`,
-          loc,
-          this.longerTier(reach),
+          `${plan.needed} tiles to tunnel at ${where}, but ${run.underground.label} reaches ${run.reach}`,
+          run.loc,
+          this.longerTier(run.reach),
         )
     }
   }
@@ -943,4 +1110,40 @@ const BUILTINS: Record<string, Builtin> = {
     const id = memberOf(args[0])
     return (id ? runtime.registry.entities.get(id)?.moduleSlots : undefined) ?? 0
   },
+
+  // `recipe` and `entity` are separate vocabularies that happen to share names: `steel-chest`
+  // is something you craft and something you place. These carry a name from one to the other,
+  // and say so plainly when it has no twin — a block holding `recipe r` cannot place `r`
+  // without asking for it.
+  'to-entity': (args, runtime, loc) => {
+    const id = memberOf(args[0])
+    if (!id || !runtime.registry.entities.has(id)) {
+      fail(`there is nothing called '${show(args[0])}' to place`, loc, 'to-entity needs a recipe named after a building')
+    }
+    return new EnumValue('entity', id)
+  },
+  'to-recipe': (args, runtime, loc) => {
+    const id = memberOf(args[0])
+    if (!id || !runtime.registry.recipes.has(id)) {
+      fail(`nothing crafts '${show(args[0])}'`, loc, 'to-recipe needs a building named after a recipe')
+    }
+    return new EnumValue('recipe', id)
+  },
+
+  width: (args, runtime, loc) => footprint(args[0], runtime, loc).x,
+  height: (args, runtime, loc) => footprint(args[0], runtime, loc).y,
+}
+
+/** The tiles an entity covers unturned. A block has no fixed size, so `measure` owns that. */
+function footprint(value: Value, runtime: Runtime, loc: Loc): Vec {
+  const id = memberOf(value)
+  const proto = id ? runtime.registry.entities.get(id) : undefined
+  if (!proto) {
+    fail(
+      `'${show(value)}' has no size of its own`,
+      loc,
+      'a block is whatever it builds — use `measure (block ())` for that',
+    )
+  }
+  return proto.size
 }

@@ -52,6 +52,27 @@ export interface PlacedEntity {
  * contiguous slice, so `measure` can drop a range and `row` can shift one, with no need for
  * a separate scratch scene.
  */
+const otherSide = (side: 'left' | 'right') => (side === 'left' ? 'right' : 'left')
+
+/** What `transform` can do to a finished piece of scene. */
+export type SceneTransform = 'flip-h' | 'flip-v' | 'flip-hv' | 'rotate-cw' | 'rotate-ccw'
+
+/** A direction under a transform, on the 16-point scale. */
+export function turnDirection(dir: number, apply: SceneTransform): number {
+  switch (apply) {
+    case 'flip-h':
+      return (16 - dir) % 16
+    case 'flip-v':
+      return (24 - dir) % 16
+    case 'flip-hv':
+      return (dir + 8) % 16
+    case 'rotate-cw':
+      return (dir + 4) % 16
+    case 'rotate-ccw':
+      return (dir + 12) % 16
+  }
+}
+
 export class Scene {
   readonly entities: PlacedEntity[] = []
   readonly diagnostics: Diagnostic[] = []
@@ -101,6 +122,63 @@ export class Scene {
       this.entities[i].x += dx
       this.entities[i].y += dy
     }
+  }
+
+  /**
+   * Turns or mirrors a range in place, around the box it occupies. The box keeps its top-left
+   * corner; a quarter turn swaps its width and height, as it does in the game.
+   *
+   * Footprints move whole — an entity's far edge becomes its near one — so a 1×2 splitter
+   * lands on the tiles it would have covered had it been built that way round. What cannot be
+   * read off the geometry is handedness: a splitter's priorities and a belt's lanes are named
+   * relative to the way the thing faces, and a mirror turns every left into a right. A
+   * rotation does not, and two mirrors cancel, which is why only `flip-h` and `flip-v` swap
+   * them.
+   */
+  transform(from: number, to: number, apply: SceneTransform): void {
+    const box = this.bbox(from, to)
+    if (!box) return
+
+    const swapsHands = apply === 'flip-h' || apply === 'flip-v'
+
+    for (let i = from; i < to; i++) {
+      const entity = this.entities[i]
+
+      if (apply === 'rotate-cw' || apply === 'rotate-ccw') {
+        const u = entity.x - box.x
+        const v = entity.y - box.y
+        entity.x = box.x + (apply === 'rotate-cw' ? box.h - v - entity.h : v)
+        entity.y = box.y + (apply === 'rotate-cw' ? u : box.w - u - entity.w)
+        ;[entity.w, entity.h] = [entity.h, entity.w]
+      } else {
+        if (apply !== 'flip-v') entity.x = 2 * box.x + box.w - entity.x - entity.w
+        if (apply !== 'flip-h') entity.y = 2 * box.y + box.h - entity.y - entity.h
+      }
+
+      // Something that cannot be turned keeps facing north; only its position moves. Every
+      // such entity in the game is square, so its footprint comes out the same either way.
+      if (entity.proto.rotatable) entity.dir = turnDirection(entity.dir, apply)
+      else if (entity.w !== entity.h && apply !== 'flip-h' && apply !== 'flip-v') {
+        this.warn(`${entity.proto.label} cannot be turned`, entity.loc)
+      }
+
+      if (!swapsHands) continue
+      if (entity.inPriority) entity.inPriority = otherSide(entity.inPriority)
+      if (entity.outPriority) entity.outPriority = otherSide(entity.outPriority)
+      if (entity.content) {
+        entity.content = entity.content.map((entry) =>
+          entry.side ? { item: entry.item, side: otherSide(entry.side) } : entry,
+        )
+      }
+    }
+  }
+
+  /** Drops entities by index. `auto` uses it for the tiles a tunnel turned out to cover. */
+  remove(indices: ReadonlySet<number>): void {
+    if (indices.size === 0) return
+    const kept = this.entities.filter((_, index) => !indices.has(index))
+    this.entities.length = 0
+    this.entities.push(...kept)
   }
 
   /** Removes a range and returns it. Used by `measure`, which must not emit. */

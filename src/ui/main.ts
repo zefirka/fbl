@@ -224,6 +224,13 @@ async function selectVersion(id: string): Promise<void> {
 
   // The dataset is all that compiling needs, so the studio opens now and the art catches up.
   host.registry = new ProtoRegistry(loaded.data, loaded.profile)
+  preview.setFluids((name) => {
+    const recipe = host.registry?.recipes.get(name)
+    const fluids = host.registry?.fluids
+    if (!recipe || !fluids) return undefined
+    const count = (side?: Record<string, number>) => Object.keys(side ?? {}).filter((id) => fluids.has(id)).length
+    return { inputs: count(recipe.in), outputs: count(recipe.out) }
+  })
   dom.docs.innerHTML = renderDocs(host.registry)
   preloader.done()
   build()

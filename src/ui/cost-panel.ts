@@ -117,6 +117,5 @@ export function renderCost(cost: Cost, view: CostView, deps: CostPanelDeps): str
       <button type="button" class="cost-collapse" data-cost-toggle title="hide the cost">×</button>
     </div>
     <ul class="cost-list">${rows(shown, deps)}</ul>
-    ${hidden > 0 ? `<div class="cost-more">+${hidden} more</div>` : ''}
-    ${cost.unresolved.length ? `<div class="cost-note cost-warn">no recipe: ${cost.unresolved.slice(0, 3).map(escape).join(', ')}</div>` : ''}`
+    ${hidden > 0 ? `<div class="cost-more">+${hidden} more</div>` : ''}`
 }

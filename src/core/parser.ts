@@ -20,7 +20,21 @@ const PRECEDENCE: Record<string, number> = {
   '%': 6,
 }
 
-const RESERVED = new Set(['defblock', 'def', 'defaults', 'for', 'in', 'if', 'else', 'and', 'or', 'not', 'measure'])
+const RESERVED = new Set([
+  'defblock',
+  'def',
+  'defaults',
+  'for',
+  'in',
+  'if',
+  'else',
+  'and',
+  'or',
+  'not',
+  'measure',
+  'throw',
+  'import',
+])
 
 class Parser {
   private pos = 0
@@ -118,6 +132,10 @@ class Parser {
           return this.parseFor()
         case 'if':
           return this.parseIf()
+        case 'throw':
+          return this.parseThrow()
+        case 'import':
+          return this.parseImport()
       }
 
       if (BLOCK_FORMS.has(token.text) && this.isBlockForm()) {
@@ -239,6 +257,33 @@ class Parser {
     return { kind: 'defaults', target, targetLoc, args, body, loc }
   }
 
+  /** `import "stdlib"`. The name is a string, so a library is never mistaken for a variable. */
+  private parseImport(): Stmt {
+    const loc = this.next().loc
+    // A lone parenthesised value is grouping, so `import ("stdlib")` reads the same.
+    const open = this.at('(')
+    if (open) this.next()
+
+    const token = this.peek()
+    if (token.kind !== 'string') {
+      fail('import needs the name of a library, in quotes', loc, 'import "stdlib"')
+    }
+    this.next()
+    if (open) this.expect(')', 'after the library name')
+
+    return { kind: 'import', name: token.text, loc }
+  }
+
+  /** `throw <message>`; a parenthesised list is joined with spaces, the way `print` reads. */
+  private parseThrow(): Stmt {
+    const loc = this.next().loc
+    const next = this.peek()
+    if (next.kind === 'newline' || next.kind === 'eof') {
+      fail('throw needs a message', loc, 'throw "size must be at least 2"')
+    }
+    return { kind: 'throw', value: this.parseExpr(), loc }
+  }
+
   private parseFor(): Stmt {
     const loc = this.next().loc
     const name = this.expectIdent('a loop variable')
@@ -325,7 +370,12 @@ class Parser {
   private parseArg(): Arg {
     const token = this.peek()
 
-    if (token.kind === 'ident' && !RESERVED.has(token.text) && this.startsExpression(1)) {
+    // A name followed by an operator is arithmetic, not a label: `at (0, lines - j)` is a
+    // subtraction. Only `-` is ambiguous — it can begin a value too — and reading it as a
+    // label there would quietly drop the left-hand side rather than fail.
+    const labelled = token.kind === 'ident' && !RESERVED.has(token.text) && this.startsExpression(1)
+
+    if (labelled && !this.continuesExpression(1)) {
       const labelLoc = token.loc
       const label = this.next().text
 
@@ -342,7 +392,7 @@ class Parser {
           const arg: Arg = {
             label,
             labelLoc,
-            value: { kind: 'tuple', items: entries.map((e) => e.value), loc: labelLoc },
+            value: { kind: 'tuple', items: entries.map((e) => e.value), entries, loc: labelLoc },
             entries,
             loc: labelLoc,
           }
@@ -360,8 +410,8 @@ class Parser {
   }
 
   /** True when the next token would extend an expression that just ended. */
-  private continuesExpression(): boolean {
-    const token = this.peek()
+  private continuesExpression(offset = 0): boolean {
+    const token = this.peek(offset)
     if (token.kind === 'punct' && (token.text === '.' || token.text === '..')) return true
     return (token.kind === 'punct' || token.kind === 'ident') && PRECEDENCE[token.text] !== undefined
   }
@@ -389,6 +439,17 @@ class Parser {
       this.skipSoftNewlines()
       const right = this.parseExpr(precedence + 1)
       left = { kind: 'binary', op, left, right, loc: token.loc }
+    }
+
+    // Looser than every operator, and right-associative, so `a ? b : c ? d : e` reads as a
+    // chain of choices rather than a puzzle.
+    if (minPrecedence === 0 && this.at('?')) {
+      const loc = this.next().loc
+      this.skipSoftNewlines()
+      const then = this.parseExpr()
+      this.expect(':', 'between the two halves of a `?` choice')
+      this.skipSoftNewlines()
+      left = { kind: 'ternary', condition: left, then, otherwise: this.parseExpr(), loc }
     }
 
     return left

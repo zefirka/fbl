@@ -1,0 +1,40 @@
+; ─────────────────────────────────────────────────────────────────────────────
+; Helpers that reshape what a body built, rather than placing anything of their
+; own. `transform` turns or mirrors; `measure` reports a box without keeping it.
+; ─────────────────────────────────────────────────────────────────────────────
+
+import "stdlib"
+
+defaults (tier blue)
+
+; ── transform ────────────────────────────────────────────────────────────────
+; The body is built the plain way round and the result is turned afterwards, so
+; blocks, layout forms and `auto` inside it need to know nothing about it.
+side-buffer (at (0, 0), size 3)
+
+transform (flip-h)  => { side-buffer (at (0, 4), size 3) }   ; left becomes right
+transform (flip-v)  => { side-buffer (at (0, 8), size 3) }   ; top becomes bottom
+transform (flip-hv) => { side-buffer (at (0, 12), size 3) }  ; a half turn
+
+; A quarter turn swaps the box: three chests across become three chests down.
+transform (rotate-cw)  => { side-buffer (at (8, 0), size 3) }
+transform (rotate-ccw) => { side-buffer (at (12, 0), size 3) }
+
+; It nests, and four turns is where it started.
+transform (rotate-cw) => {
+  transform (rotate-cw) => {
+    transform (flip-h) => { side-buffer (at (16, 0), size 3) }
+  }
+}
+
+; ── measure ──────────────────────────────────────────────────────────────────
+; `measure` evaluates a placement, reports its box, then removes it again — the
+; way to space things by what they turned out to be rather than by a guess.
+def buffer = measure (side-buffer (size 4))
+
+at (0, 18) => {
+  row (gap 1) for i in 0..3 => { side-buffer (size 4) }
+}
+
+; The label under it is that measurement, not a number written twice.
+print ("one buffer is", buffer.width, "×", buffer.height)

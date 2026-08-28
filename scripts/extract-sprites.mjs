@@ -257,7 +257,120 @@ const PIPE_VARIANTS = [
 ]
 
 /** Per-prototype-type graphics, because the field that holds them is not uniform. */
+/**
+ * Parts the game draws over a machine whatever it is doing. The electromagnetic plant's base
+ * sprite is a shell with a hole where its innards go, and those live here rather than in the
+ * animation — without them the hole shows the shadow underneath it as a black pit. The
+ * cryogenic plant's glass is the same story.
+ *
+ * Only what a machine shows standing still: nothing that is working, nothing that moves on
+ * its own (`animated_shift` — a mining drill's bit is inside the housing at every frame the
+ * game actually draws, so a still of it is a black shaft), and no scorch mark, which is
+ * ground the drill has burnt over time rather than anything a blueprint places.
+ */
+function alwaysDrawnLayers(proto, options = {}) {
+  const list = proto.graphics_set?.working_visualisations ?? proto.working_visualisations
+  if (!Array.isArray(list)) return []
+
+  return list
+    .filter((vis) => vis.always_draw && vis.animation)
+    .filter((vis) => !vis.draw_in_states || vis.draw_in_states.includes('idle'))
+    .filter((vis) => !vis.animated_shift && !vis.mining_drill_scorch_mark)
+    .flatMap((vis) => resolveLayers(vis.animation, options))
+}
+
+const SIDE_NAMES = ['north', 'east', 'south', 'west']
+
+/**
+ * The pipe stubs a machine grows when its recipe uses a fluid. The game keeps them out of the
+ * machine's own art — an assembler with a dry recipe has no pipes at all — and hands over one
+ * sprite per side the connection can end up on once the machine is turned.
+ *
+ * Only boxes whose picture is a map of all four sides are taken: the foundry has a single
+ * sprite for its own fixed orientation, and drawing that on an east-facing connection would be
+ * inventing art the game never made.
+ */
+/**
+ * A machine's fluid boxes, however the prototype spells them: an array for the crafting
+ * machines, a pair of singular fields for boilers and generators. Each box can carry several
+ * connections — a heat exchanger takes water on both ends.
+ */
+function fluidBoxList(proto) {
+  const out = []
+  if (Array.isArray(proto.fluid_boxes)) {
+    proto.fluid_boxes.forEach((box, i) => out.push({ box, key: String(i), type: box?.production_type }))
+  }
+  if (proto.fluid_box) out.push({ box: proto.fluid_box, key: 'in', type: 'input' })
+  if (proto.output_fluid_box) out.push({ box: proto.output_fluid_box, key: 'out', type: 'output' })
+  return out.filter((entry) => entry.box?.pipe_connections?.length)
+}
+
+function fluidPipeVariants(proto) {
+  const variants = {}
+  fluidBoxList(proto).forEach(({ box, key }) => {
+    for (const [prefix, art] of [
+      ['pipe', box.pipe_picture],
+      // The cap the game puts over a connection with nothing attached. A chemical plant's
+      // own art has open pipe mouths; uncapped, you look straight down the hole.
+      ['cover', box.pipe_covers],
+    ]) {
+      if (!art || !SIDE_NAMES.every((side) => art[side])) continue
+      for (const side of SIDE_NAMES) {
+        const layers = resolveLayers(art[side])
+        if (layers.length) variants[`${prefix}-${key}-${side}`] = layers
+      }
+    }
+  })
+  return variants
+}
+
+/** Every fluid connection, so the renderer can turn each one with the machine. */
+function fluidConnections(proto) {
+  const has = (art) => Boolean(art) && SIDE_NAMES.every((side) => art[side])
+  const out = []
+
+  for (const { box, key, type } of fluidBoxList(proto)) {
+    const stub = has(box.pipe_picture)
+    const cover = has(box.pipe_covers)
+    if (!stub && !cover) continue
+
+    for (const connection of box.pipe_connections) {
+      if (!connection?.position) continue
+      out.push({
+        box: key,
+        type: type === 'output' ? 'output' : 'input',
+        dir: connection.direction ?? 0,
+        // Where the connection sits, in tiles from the machine's centre. The art is shifted
+        // relative to that, not to the machine, so both have to be added up.
+        pos: connection.position,
+        stub,
+        cover,
+        // An assembler's boxes vanish on a dry recipe; a chemical plant's are always there.
+        optional: Boolean(proto.fluid_boxes_off_when_no_fluid_recipe),
+      })
+    }
+  }
+
+  return out.length ? out : undefined
+}
+
 function variantsFor(type, proto) {
+  const variants = { ...baseVariantsFor(type, proto), ...fluidPipeVariants(proto) }
+
+  return Object.fromEntries(
+    Object.entries(variants).map(([key, layers]) => {
+      // A pipe stub is drawn as the game hands it over; the always-drawn parts belong to the
+      // machine's body, not to it.
+      if (!layers?.length || key.startsWith('pipe-')) return [key, layers]
+      // Direction only, never `variations`: these sheets are frame strips, and telling
+      // `resolveLayers` to treat them as four-way indexes past the end of the file.
+      const direction = DIRECTION_NAMES.indexOf(key)
+      return [key, [...layers, ...alwaysDrawnLayers(proto, direction < 0 ? {} : { direction })]]
+    }),
+  )
+}
+
+function baseVariantsFor(type, proto) {
   switch (type) {
     case 'transport-belt': {
       const set = proto.belt_animation_set?.animation_set
@@ -418,6 +531,99 @@ async function loadImage(dataDir, filename) {
  * Composites one variant. Layer geometry is computed in tiles first — `shift` is in tiles and
  * `scale` maps sprite pixels to them — then converted to atlas pixels at `pixelsPerTile`.
  */
+/** The opaque part of a rendered sprite, in pixels from its own top-left. */
+async function inkBounds(buffer) {
+  const { data, info } = await sharp(buffer).ensureAlpha().raw().toBuffer({ resolveWithObject: true })
+  let left = info.width
+  let right = -1
+  let top = info.height
+  let bottom = -1
+
+  for (let y = 0; y < info.height; y++) {
+    for (let x = 0; x < info.width; x++) {
+      // Solid pixels only: a machine's shadow reaches far past its body, and the body is
+      // what a pipe has to meet.
+      if (data[(y * info.width + x) * 4 + 3] <= 200) continue
+      if (x < left) left = x
+      if (x > right) right = x
+      if (y < top) top = y
+      if (y > bottom) bottom = y
+    }
+  }
+
+  return right < 0 ? null : { left, right, top, bottom }
+}
+
+/**
+ * Pulls each pipe stub back until it touches the machine.
+ *
+ * The stub belongs at its fluid connection, which sits on the footprint edge — but a machine
+ * is drawn in perspective, and its body does not reach that edge on every side. An assembler
+ * overshoots its own top by a third of a tile and falls short of its sides by the same, so a
+ * stub placed by the numbers meets the body at the top and floats a visible gap away from it
+ * at the sides. Measuring the art and closing the gap is the only way to know: the offset is
+ * a property of the drawing, and the prototype does not carry it.
+ */
+/** Which way a stub reaches: the art is keyed by the side it is seen from, so it is opposite. */
+const OUTWARD = {
+  north: { x: 0, y: 1 },
+  east: { x: -1, y: 0 },
+  south: { x: 0, y: -1 },
+  west: { x: 1, y: 0 },
+}
+const AXIS_UNIT = { 0: { x: 0, y: -1 }, 4: { x: 1, y: 0 }, 8: { x: 0, y: 1 }, 12: { x: -1, y: 0 } }
+
+async function seatPipes(rendered, boxes, pixelsPerTile) {
+  const body = rendered.default ?? Object.values(rendered).find((v) => v)
+  if (!body) return
+  const bodyInk = await inkBounds(body.buffer)
+  if (!bodyInk) return
+
+  // Everything in tiles from the machine's centre.
+  const bodyLeft = body.offsetX + bodyInk.left / pixelsPerTile
+  const bodyRight = body.offsetX + (bodyInk.right + 1) / pixelsPerTile
+  const bodyTop = body.offsetY + bodyInk.top / pixelsPerTile
+  const bodyBottom = body.offsetY + (bodyInk.bottom + 1) / pixelsPerTile
+
+  for (const [key, sprite] of Object.entries(rendered)) {
+    // Covers cap a hole in the machine's own art and are already where they belong; only the
+    // stubs, which stand outside it, have to be seated.
+    const match = /^pipe-(.+)-(north|east|south|west)$/.exec(key)
+    if (!match) continue
+
+    const box = boxes?.find((b) => b.box === match[1])
+    const ink = await inkBounds(sprite.buffer)
+    if (!box || !ink) continue
+
+    // The art is keyed by the side it is seen from, so the stub reaches out the opposite way.
+    const side = match[2]
+    const out = OUTWARD[side]
+    // How far along its own axis the connection sits, which is where the renderer will put
+    // this sprite once the machine has been turned to face that way.
+    const unit = AXIS_UNIT[box.dir] ?? AXIS_UNIT[0]
+    const reach = Math.abs(box.pos[0] * unit.x + box.pos[1] * unit.y)
+    const anchorX = out.x * reach
+    const anchorY = out.y * reach
+
+    if (out.x > 0) {
+      const near = anchorX + sprite.offsetX + ink.left / pixelsPerTile
+      if (near > bodyRight) sprite.offsetX -= near - bodyRight
+    } else if (out.x < 0) {
+      const near = anchorX + sprite.offsetX + (ink.right + 1) / pixelsPerTile
+      if (near < bodyLeft) sprite.offsetX += bodyLeft - near
+    } else if (out.y > 0) {
+      const near = anchorY + sprite.offsetY + ink.top / pixelsPerTile
+      if (near > bodyBottom) sprite.offsetY -= near - bodyBottom
+    } else {
+      const near = anchorY + sprite.offsetY + (ink.bottom + 1) / pixelsPerTile
+      if (near < bodyTop) sprite.offsetY += bodyTop - near
+    }
+  }
+}
+
+/** How much of a shadow sprite survives; the game draws them well short of solid. */
+const SHADOW_ALPHA = 0.42
+
 async function renderVariant(dataDir, layers, pixelsPerTile) {
   const placed = []
   for (const layer of layers) {
@@ -456,12 +662,23 @@ async function renderVariant(dataDir, layers, pixelsPerTile) {
       let region = layer.source.image
         .extract({ left: layer.sx, top: layer.sy, width: layer.sw, height: layer.sh })
         .resize(w, h, { kernel: 'lanczos3' })
-      if (layer.shadow) region = region.ensureAlpha().composite([])
+
+      // A shadow sprite is solid black with the shape in its alpha, and the game draws it
+      // translucent. `composite` has no opacity of its own, so thin the alpha with a
+      // `dest-in` pass — otherwise every machine gets a hard black slab beside it.
+      if (layer.shadow) {
+        const veil = await sharp({
+          create: { width: w, height: h, channels: 4, background: { r: 255, g: 255, b: 255, alpha: SHADOW_ALPHA } },
+        })
+          .png()
+          .toBuffer()
+        region = sharp(await region.ensureAlpha().png().toBuffer()).composite([{ input: veil, blend: 'dest-in' }])
+      }
+
       composites.push({
         input: await region.png().toBuffer(),
         left: Math.round((layer.tileLeft - left) * pixelsPerTile),
         top: Math.round((layer.tileTop - top) * pixelsPerTile),
-        opacity: layer.shadow ? 0.55 : 1,
       })
     } catch (error) {
       console.warn(`  ! ${layer.filename}: ${error.message}`)
@@ -589,6 +806,7 @@ const wanted = [...registry.entities.keys()]
 
 const entries = []
 const manifest = {}
+const fluids = {}
 let missing = []
 
 for (const name of wanted) {
@@ -609,8 +827,13 @@ for (const name of wanted) {
     rendered[key] = item
   }
 
+  await seatPipes(rendered, fluidConnections(found.proto), pixelsPerTile)
+
   if (Object.keys(rendered).length === 0) missing.push(name)
   else manifest[name] = rendered
+
+  const connections = fluidConnections(found.proto)
+  if (connections) fluids[name] = connections
 }
 
 if (entries.length === 0) {
@@ -642,6 +865,7 @@ await writeFile(
       width: atlas.width,
       height: atlas.height,
       beltIndex: BELT_INDEX,
+      fluidBoxes: fluids,
       entities: Object.fromEntries(
         Object.entries(manifest).map(([name, variants]) => [
           name,

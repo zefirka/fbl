@@ -7,7 +7,7 @@
 
 defaults (tier blue)
 
-; Two lanes, two ores. The icons are drawn where the run starts.
+; Two lanes, two ores. Each tile draws what it carries, on the lane it carries it.
 belt (from (0, 0) to (7, 0), content (iron-ore left, copper-ore right))
 belt (from (0, 1) to (7, 1), content (iron-ore left, copper-ore right))
 

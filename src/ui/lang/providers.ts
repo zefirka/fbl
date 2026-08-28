@@ -22,6 +22,7 @@ export interface LanguageHost {
 }
 
 const KEYWORD_DOCS: Record<string, string> = {
+  import: 'Bring in a library: `import "stdlib"` — its blocks and helpers land in the same namespace.',
   defblock: 'Define a block: `defblock name (int n) => { … }`. It writes itself from (0, 0).',
   def: 'Bind a value: `def prod-3 = repeat (4, productivity-module-3)`.',
   defaults: 'Preset any slot left blank: `defaults (tier blue)`, optionally narrowed to one entity.',
@@ -29,8 +30,10 @@ const KEYWORD_DOCS: Record<string, string> = {
   row: 'Pack children left to right, measuring each. `row for i in 0..n => { … }` folds the loop in.',
   column: 'Pack children top to bottom, measuring each.',
   at: 'Shift the frame: `at (10, 4) => { … }`.',
+  transform: 'Turn or mirror what a body built: `transform (rotate-cw) => { … }`.',
   if: 'Conditional: `if n > 4 => { … } else => { … }`.',
   measure: 'Evaluate a placement, report its bounding box, then remove it again.',
+  throw: 'Raise your own error: `throw "size must be at least 2"`. Nothing is placed.',
 }
 
 function slotsFor(host: LanguageHost, callee: string): SlotDef[] | null {
@@ -169,6 +172,7 @@ export function registerLanguage(monaco: typeof Monaco, host: LanguageHost): voi
             ['modules', 'module[]'],
             ['gap', 'int'],
             ['align', 'align'],
+            ['route', 'routing'],
           ]
           for (const [name, type] of defaultable) {
             suggestions.push(item(name, Kind.Property, type, undefined, `${name} `))

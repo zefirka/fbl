@@ -3,9 +3,9 @@ import type * as monaco from 'monaco-editor'
 export const LANGUAGE_ID = 'fbl'
 export const THEME_ID = 'fbl-dark'
 
-const KEYWORDS = ['defblock', 'def', 'defaults', 'for', 'in', 'if', 'else', 'and', 'or', 'not', 'measure', 'row', 'column']
+const KEYWORDS = ['defblock', 'def', 'defaults', 'for', 'in', 'if', 'else', 'and', 'or', 'not', 'measure', 'row', 'column', 'throw', 'transform', 'import']
 const TYPES = ['int', 'float', 'number', 'bool', 'text', 'coord', 'direction', 'tier', 'quality', 'recipe', 'item', 'module', 'entity', 'handle', 'any']
-const SLOTS = ['at', 'from', 'to', 'via', 'dir', 'tier', 'recipe', 'modules', 'quality', 'type', 'length', 'gap', 'align', 'in', 'out']
+const SLOTS = ['at', 'from', 'to', 'via', 'dir', 'tier', 'recipe', 'modules', 'quality', 'type', 'length', 'gap', 'align', 'route', 'in', 'out']
 const LITERALS = [
   'north', 'east', 'south', 'west', 'northeast', 'southeast', 'southwest', 'northwest',
   'up', 'right', 'down', 'left',
@@ -14,7 +14,7 @@ const LITERALS = [
 ]
 const BUILTINS = [
   'repeat', 'count', 'print', 'min', 'max', 'abs', 'floor', 'ceil', 'round',
-  'ingredients', 'craft-time', 'module-slots',
+  'ingredients', 'craft-time', 'module-slots', 'to-entity', 'to-recipe', 'width', 'height',
   // Helpers that expand into many entities.
   'belt', 'underground', 'balancer',
 ]
@@ -31,7 +31,7 @@ export const monarch: monaco.languages.IMonarchLanguage = {
       [/"([^"\\]|\\.)*"?/, 'string'],
       // A dot only continues a number when a digit follows, so `0..4` stays a range.
       [/\d+(\.\d+)?/, 'number'],
-      [/=>|==|!=|<=|>=|\.\.|\[\]|[+\-*/%<>=.]/, 'operator'],
+      [/=>|==|!=|<=|>=|\.\.|\[\]|[+\-*/%<>=.?:]/, 'operator'],
       [
         /[A-Za-z_][A-Za-z0-9_?!-]*/,
         {

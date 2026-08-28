@@ -7,7 +7,12 @@ import type { SpriteAtlas, SpriteRect } from '../data/sprites'
  */
 export function buildVariantKeys(entities: PlacedEntity[], atlas: SpriteAtlas): Map<PlacedEntity, SpriteRect> {
   const belts = tileIndex(entities, isBeltish)
-  const pipes = tileIndex(entities, isPipeish)
+  // A machine with fluid connections is a pipe neighbour too: a pipe running into a chemical
+  // plant has to draw the end that meets it, or the plant's mouth is left gaping.
+  const pipes = tileIndex(
+    entities,
+    (entity) => isPipeish(entity) || Boolean(atlas.fluidBoxes?.[entity.proto.name]),
+  )
   const resolved = new Map<PlacedEntity, SpriteRect>()
 
   for (const entity of entities) {

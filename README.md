@@ -128,7 +128,7 @@ defaults (tier yellow) => { … }       ; only inside this block
 
 Innermost wins; within a scope, an entity name beats a family, which beats a bare slot.
 Only styling slots can be defaulted — `tier` `quality` `dir` `recipe` `modules` `gap`
-`align` — never a position.
+`align`, `route` — never a position.
 
 ### Blocks
 
@@ -185,13 +185,106 @@ Layout forms exist because a block's width is not knowable in advance — it dep
 recipe, the modules, the belt tier. `row` and `column` evaluate a child, measure what it
 emitted, then translate it into place.
 
+**A layout only packs along its own axis.** The first item stays exactly where it was written
+and each one after it starts a `gap` past the one before; nothing moves across the axis. A
+machine you put above the line stays above the line, and a belt written after the row finds it
+there — which is what makes `auto` usable next to a layout:
+
+```
+row (gap 2) for i in 0..4 => {
+  electromagnetic-plant (at (-5, -3), recipe quality-module)   ; above the line
+  bulk-inserter (at (-1, 0), west)                             ; on it
+}
+belt (from (24, 0) to (-12, 0), auto)                          ; tunnels under each group
+```
+
+`align` opts into moving things across the axis, measured against the items themselves so it
+means the same wherever the layout sits: `start` flushes them to the leading edge, `center`
+and `end` follow. Without it their own placement stands.
+
 ```
 at (10, 4) => { … }                    ; shift the frame
+transform (rotate-cw) => { … }         ; turn or mirror what the body built
 row (gap 1) => { … }
 column (gap 1, align center) => { … }
 if n > 4 => { … } else => { … }
 def m = measure (cell ())              ; evaluate, report the box, remove it again
 ```
+
+### Turning and mirroring
+
+`transform` builds its body the plain way round and then turns what came out.
+
+| | |
+| --- | --- |
+| `flip-h` | swaps left and right |
+| `flip-v` | swaps top and bottom |
+| `flip-hv` | both at once, which is a half turn |
+| `rotate-cw` / `rotate-ccw` | quarter turns |
+
+```
+side-buffer (at (0, 0), size 3)
+transform (flip-h)    => { side-buffer (at (0, 6), size 3) }
+transform (rotate-cw) => { side-buffer (at (12, 0), size 3) }
+```
+
+Everything inside sees an ordinary frame, so blocks, layout forms and `auto` need to know
+nothing about it. The box keeps its top-left corner and a quarter turn swaps its width and
+height, as it does in the game. Footprints move whole — a 1×2 splitter lands on the tiles it
+would have covered had it been built that way round — and directions turn with them, except for
+entities the game will not let you turn, which only move.
+
+What the geometry cannot show is handedness: a splitter's priorities and a belt's lanes are
+named relative to the way the thing faces, so a mirror turns every left into a right and they
+are swapped to match. A rotation does not, and two mirrors cancel — only `flip-h` and `flip-v`
+swap them.
+
+One limit: a machine whose fluid connections are asymmetric — a chemical plant, an oil refinery
+— is moved and turned correctly, but 2.0 stores its internal mirroring as a separate `mirror`
+flag on the entity, and that flag is not written yet.
+
+### Raising your own errors
+
+A block can refuse the arguments it was given. `throw` stops the build with your message, and
+the error lands on the **call** — the line that needs fixing — naming the block that raised it:
+
+```
+defblock bank (int size) => {
+  if size < 2 => { throw "size must be at least 2" }
+  for i in 0..size => { steel-chest (at (i, 0)) }
+}
+
+bank (at (0, 0), size 4)
+bank (at (0, 2), size 1)      ; size must be at least 2 — thrown by 'bank' on line 2
+```
+
+A parenthesised list is joined with spaces, the way `print` reads its arguments, so the message
+can name the value that broke the rule: `throw ("size must be at least 2, got", size)`.
+
+Like every error it means nothing is placed at all — the preview goes empty rather than showing
+half a blueprint.
+
+### Labels and arithmetic
+
+A slot is written `name value`, which leaves one place where an argument could be read two
+ways: `at (0, lines - j)` might be a subtraction, or the label `lines` with the value `-j`.
+Minus is the only operator that can also begin a value, so it is the only one that was ever in
+doubt — and it is read as arithmetic. A labelled negative writes its own brackets:
+`gap (-2)`.
+
+### Choosing a value
+
+`?` picks between two values, where `if` picks between two pieces of a program. It reads looser
+than every operator and chains to the right, so a run of conditions needs no brackets:
+
+```
+def pos = i > 2 ? 3 : 1
+def t = i < 4 ? yellow : i < 8 ? red : blue
+
+bulk-inserter (at (i, 0), i > 1 ? left : right)
+```
+
+The slot's own type reaches both halves, which is why the members there can be written bare.
 
 ### Handles and fields
 
@@ -219,16 +312,65 @@ belt (from (0, 0) to (10, 0), blue, auto)   ; tunnels beneath the machine
 
 `auto` does not route around what is in the way — it goes under it. Each run of blocked tiles
 becomes an underground pair, entry on the last free tile before it and exit on the first free
-tile after. A gap the tier cannot reach is an error naming a tier that can, rather than a belt
-quietly laid across a machine; so is a single free tile between two obstacles, which would have
-to be both an exit and an entry. `auto` only sees what was placed before it, so order matters.
+tile after; obstacles a single tile apart share one longer tunnel, since that tile would have to
+be both an exit and an entry. A line already running the way the belt is heading — a splitter, a
+belt, a tunnel — is not in the way at all: the belt joins it and carries on. A span the tier
+cannot reach is an error naming a tier that can, rather than a belt quietly laid across a
+machine.
 
-It composes with `row` and `column`: a layout settles each item into place before evaluating
-the next, so a belt routing inside one sees its neighbours where they will actually stand.
+Where the obstacle is written does not matter. Routing waits until the program has finished and
+then reads the blueprint as it stands, so a splitter three lines below the belt merges into it
+exactly as one three lines above would. The tiles go down as the belt is met — handles and
+layout measurement see the run straight away — and only the choice between belt, tunnel and
+nothing waits for the end. Two `auto` runs along one line still resolve in source order: the
+later merges into the earlier.
+
+`defaults (auto)` puts every belt below it on that footing, so a bus does not have to say it on
+every line; a belt that wants the old behaviour writes `direct`.
+
+```
+defaults (tier blue, auto)
+
+assembling-machine-3 (at (3, -1))
+belt (from (0, 0) to (10, 0))           ; tunnels, without asking
+belt (from (0, 2) to (10, 2), direct)   ; unless it says otherwise
+```
+
+It composes with `row` and `column`: the layout has finished by the time anything is routed, so
+a belt inside one sees its neighbours where they actually ended up.
+
+### Libraries
+
+Nothing outside the language itself is in scope until it is asked for. `import` brings a
+library's blocks and helpers into the same namespace as the entities — no prefix, no aliasing —
+and using one of them without the import says where it lives rather than guessing at a typo.
+
+```
+import "stdlib"
+
+balancer (at (0, 0), 4 to 4)
+side-buffer (at (7, 0), size 4)
+```
+
+There is one library so far, `stdlib`:
+
+| | |
+| --- | --- |
+| `balancer` | every N→M belt balancer from 1 to 8 |
+| `side-buffer` | boxes in a row, fed and drained from the side |
+| `line-buffer` | inserter, box, inserter, box — a chain along one line |
+
+`balancer` is written in the interpreter — it expands a book of ready-made blueprints, which no
+amount of fbl would express better — and `side-buffer` is written in fbl, in
+`src/core/modules.ts`. Both arrive with the same import; which is which is an implementation
+detail. A guard inside a library reports on **your** call and names the library, since its own
+line numbers mean nothing to you.
 
 ### Balancers
 
 ```
+import "stdlib"
+
 balancer (4 to 8)                            ; four lanes in, eight out
 balancer (at (0, 20), 8 to 4, right, green)  ; rotated, turbo belts
 ```
@@ -255,9 +397,9 @@ splitter (at (6, 2), in-priority left, out-priority right)
 ```
 
 `content` is metadata: it never reaches the blueprint. It is what the preview draws — on the
-lane the item rides, at the head of a run and wherever a tunnel surfaces — and what the
-throughput analysis will read. A belt has two lanes; a chest holds as many kinds as it has
-stacks, and shows a count past four.
+lane the item rides, along every tile of the run — and what the throughput analysis will read.
+A belt has two lanes; a chest holds as many kinds as it has stacks, and shows a count past
+four.
 
 Filters do reach the blueprint. `not` sits in front of an inserter's whole list, because the
 game keeps one whitelist/blacklist switch per inserter rather than one per item. A splitter
@@ -266,8 +408,23 @@ sends it left, which is what the game does with the field left empty.
 
 ### Functions
 
-`repeat` `count` `min` `max` `abs` `floor` `ceil` `round` `print`, plus three that read the
-game data: `ingredients (recipe)`, `craft-time (recipe)`, `module-slots (entity)`.
+`repeat` `count` `min` `max` `abs` `floor` `ceil` `round` `print`, plus the ones that read the
+game data: `ingredients (recipe)`, `craft-time (recipe)`, `module-slots (entity)`,
+`width (entity)`, `height (entity)`.
+
+`recipe` and `entity` are separate vocabularies that happen to share names — `steel-chest` is
+both something you craft and something you place — so `to-entity` and `to-recipe` carry a name
+from one to the other, and say so plainly when it has no twin:
+
+```
+defblock stash (recipe r) => {
+  def entity box = to-entity (r)
+  box (at (0, 0))
+}
+```
+
+`width` and `height` are the footprint before it is turned. A block has no size of its own — it
+is whatever it builds — so `measure (block ())` answers that instead.
 
 ## What the checker catches
 
@@ -330,6 +487,10 @@ that grows it from bacteria — follow it and a transport belt is priced in bioc
 trail stops wherever something *mines* an item or *grows* it or makes it from nothing, which is
 also why sulfuric acid and heavy oil turn up as raw: on some planets they are.
 
+It also stops at anything nothing makes at all. Wood is chopped from trees and holmium ore
+comes out of scrap, which this model does not follow; both are inputs, not gaps in the data,
+and they are listed as such rather than flagged.
+
 A **material** is an item that is *processed* rather than assembled — its recipe runs in a
 furnace, a foundry, a chemical plant, a refinery — and that is made of nothing but raw
 resources and other materials. Both halves are load-bearing: a foundry casts turbo belts too,
@@ -364,6 +525,7 @@ src/core/          the language — no DOM, runs in Node too
   types.ts         the type lattice and the closed vocabularies
   slots.ts         which slots each entity, helper and block accepts
   metadata.ts      reads the slots written as brackets: content, filters
+  modules.ts       the standard library — fbl source, plus the helpers it unlocks
   check.ts         the static pass; everything above runs before a single placement
   run.ts           AST → placements (frames, layout, defaults, helpers)
   scene.ts         the placement accumulator; bbox, translate, collision
@@ -420,7 +582,29 @@ What to know before trusting it with a real base:
   through its west edge, so the piece that turns it south is `west-to-south`. Reading it the
   other way mirrors every bend, which is a bug you only notice by looking. The 20 orientation
   indices are Factorio's defaults, absent from the dump because every vanilla belt uses them;
-  they were read off a contact sheet of the sheet itself.
+  they were read off a contact sheet of the sheet itself. A neighbour counts as feeding the
+  tile when it *points* at it — comparing directions rather than adding a direction to the
+  neighbour's origin, which is what makes a splitter work: it is two tiles wide and its
+  position is only one of them, so the arithmetic missed whichever lane it was not on and the
+  belt leaving it came out straight.
+- **A machine with a fluid recipe grows pipe stubs.** The game keeps them out of the machine's
+  own art — a dry assembler has no pipes at all — and supplies one sprite per side, drawn
+  relative to the fluid box rather than to the machine, and keyed by the side the stub is
+  *seen from*: the sprite for a connection pointing north is `south`. Read either of those the
+  obvious way and every pipe lands on the wrong edge, which is how both were found. A third
+  thing has to be measured rather than read: a machine is drawn in perspective, so its body
+  does not reach its own footprint on every side — an assembler overshoots its top by a third
+  of a tile and falls short of its sides by the same. A stub placed by the numbers therefore
+  meets the body at the top and floats a visible gap away from it at the sides, so the
+  extractor measures the opaque art and seats each stub against it. Only boxes the game gave
+  art for all four sides of are drawn; the foundry has one sprite for its own fixed
+  orientation, and turning that would be inventing art. A chemical plant needs none of this —
+  its pipes are part of its sprite already — but its art has open mouths, and the cap that
+  closes them is a separate `pipe_covers` sprite the game draws on any connection with nothing
+  attached. Without it you look straight down the hole, which is what a chemical plant used to
+  look like here. The cap goes on the tile the pipe would have taken, not on the machine's own,
+  and a pipe standing there suppresses it — for which a pipe has to count a fluid machine as a
+  neighbour, or it draws its lonely end instead of the one that meets it.
 - **Splitters and undergrounds are drawn in several pieces**, as the game draws them. A
   splitter is two belt lanes, then `structure_patch`, then `structure` — its main housing only
   reaches over one lane, so without the patch half the splitter renders as bare belt. An

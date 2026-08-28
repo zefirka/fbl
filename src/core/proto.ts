@@ -73,6 +73,8 @@ export class ProtoRegistry {
   readonly qualities: string[]
   readonly modules = new Set<string>()
   readonly itemLabels = new Map<string, string>()
+  /** Fluids move by pipe, not by belt, which is what makes a machine grow one. */
+  readonly fluids = new Set<string>()
 
   constructor(
     readonly dataset: LabDataset,
@@ -85,6 +87,7 @@ export class ProtoRegistry {
     for (const item of dataset.items) {
       this.itemLabels.set(item.id, item.name)
       if (item.module) this.modules.add(item.id)
+      if (item.category === 'fluids') this.fluids.add(item.id)
 
       const overrides = ENTITY_GEOMETRY[item.id]
       const machineSize = item.machine?.size

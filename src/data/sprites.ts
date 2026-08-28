@@ -13,6 +13,25 @@ export interface SpriteRect {
   oy: number
 }
 
+/**
+ * One of a machine's fluid connections, for the pipe stub it grows when its recipe uses a
+ * fluid. `dir` is where it points with the machine facing north; it turns with the machine.
+ */
+export interface FluidBoxInfo {
+  /** Which fluid box the art belongs to; several connections can share one. */
+  box: string
+  type: 'input' | 'output'
+  /** Where the connection points with the machine facing north; it turns with the machine. */
+  dir: number
+  /** Where the connection sits, in tiles from the machine's centre, facing north. */
+  pos: [number, number]
+  /** Whether the game supplies a pipe stub for this box, and a cap for its open end. */
+  stub: boolean
+  cover: boolean
+  /** Whether the box disappears when the recipe uses no fluid. */
+  optional: boolean
+}
+
 export interface SpriteAtlas {
   gameVersion: string
   pixelsPerTile: number
@@ -20,6 +39,8 @@ export interface SpriteAtlas {
   height: number
   beltIndex: Record<string, number>
   entities: Record<string, Record<string, SpriteRect>>
+  /** Only the machines whose stubs are separate sprites; the rest draw their own pipes. */
+  fluidBoxes?: Record<string, FluidBoxInfo[]>
 }
 
 export interface LoadedAtlas {

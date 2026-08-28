@@ -53,6 +53,23 @@ test('commas are optional between arguments', () => {
   )
 })
 
+test('a name followed by an operator is arithmetic, not a label', () => {
+  // `lines - j` used to read as the label `lines` with the value `-j`, which silently threw
+  // away the left-hand side and put the entity somewhere else entirely.
+  const at = (source) => run(source).scene.entities.map((e) => [e.x, e.y])
+  const expected = [
+    [0, 4],
+    [0, 3],
+    [0, 2],
+  ]
+  assert.deepEqual(at('def lines = 4\nfor j in 0..3 => { steel-chest (at (0, lines - j)) }'), expected)
+  assert.deepEqual(at('def lines = 4\nfor j in 0..3 => { steel-chest (at (0, (lines - j))) }'), expected)
+
+  // The other operators never had the problem, and labels still read as labels.
+  assert.deepEqual(at('def n = 2\nsteel-chest (at (n * 3, n + 1))'), [[6, 3]])
+  assert.deepEqual(at('def n = 5\nbelt (at (0, 0), east, length n - 2, blue)').length, 3)
+})
+
 test('a comma separates two bare values from a label and its value', () => {
   // `(north, blue)` is two values; `(tier blue)` is one labelled value.
   const { scene } = run('belt (from (0, 0), to (3, 0), east, blue)')
@@ -444,7 +461,7 @@ test('a name that is not placeable is rejected where an entity is expected', () 
     defblock pad (entity machine) => { machine (at (0, 0)) }
     pad (entity iron-plate)
   `)
-  assert.match(error.message, /'iron-plate' is not a entity/)
+  assert.match(error.message, /'iron-plate' is not an entity/)
 })
 
 test('an indirect placement still catches a slot typo', () => {
@@ -496,6 +513,342 @@ test('a machine size from the dataset wins over the hand-written fallback', () =
   assert.deepEqual([scene.entities[0].w, scene.entities[0].h], [5, 5])
 })
 
+// ── Reading the game data ─────────────────────────────────────────────────────
+
+test('width and height report the footprint before it is turned', () => {
+  const { output } = run(`
+    print (width (assembling-machine-3), height (assembling-machine-3))
+    print (width (splitter), height (splitter))
+    print (width (boiler), height (boiler))
+  `)
+  assert.deepEqual(output, ['3 3', '2 1', '3 2'])
+
+  // They compose where a position is wanted, which is the point of having them.
+  const { scene } = run(`
+    defaults (tier blue)
+    for i in 0..3 => { steel-chest (at (i * width (assembling-machine-3), 0)) }
+  `)
+  assert.deepEqual(scene.entities.map((e) => e.x), [0, 3, 6])
+
+  // A block is whatever it builds, so it has no size of its own to give.
+  const [error] = errorsIn('defblock pair () => { steel-chest (at (0, 0)) }\nprint (width (pair))')
+  assert.match(error.message, /has no size of its own/)
+  assert.match(error.hint, /measure/)
+})
+
+test('to-entity and to-recipe carry a name between the two vocabularies', () => {
+  const { scene } = run(`
+    defblock stash (recipe r) => {
+      def entity box = to-entity (r)
+      box (at (0, 0))
+    }
+    stash (at (0, 0), r steel-chest)
+    stash (at (2, 0), r iron-chest)
+  `)
+  assert.deepEqual(scene.entities.map((e) => e.proto.name), ['steel-chest', 'iron-chest'])
+
+  assert.deepEqual(run('print (to-recipe (steel-chest))').output, ['steel-chest'])
+  assert.deepEqual(run('print (to-recipe (to-entity (steel-chest)))').output, ['steel-chest'])
+
+  // A recipe with no building of the same name has nowhere to go.
+  const [error] = errorsIn('print (to-entity (concrete))')
+  assert.match(error.message, /nothing called 'concrete' to place/)
+})
+
+test('a function argument that is itself a call is read as one', () => {
+  // `count (…)` inside `print (…)` is a nested call, not a label with a value — and the same
+  // one level further down, inside a coordinate.
+  assert.deepEqual(run('print (count (repeat (3, 1)))').output, ['3'])
+  const { scene } = run('steel-chest (at (width (assembling-machine-3), 0))')
+  assert.deepEqual([scene.entities[0].x, scene.entities[0].y], [3, 0])
+
+  // The bracket slots that are not calls still read as themselves.
+  const belt = run('belt (from (0, 0) to (3, 0), blue, content (iron-ore left, coal right))').scene
+  assert.deepEqual(belt.entities[0].content, [
+    { item: 'iron-ore', side: 'left' },
+    { item: 'coal', side: 'right' },
+  ])
+})
+
+// ── Choosing a value ──────────────────────────────────────────────────────────
+
+test('a choice picks between two values', () => {
+  const { output } = run(`
+    for i in 0..5 => {
+      def pos = i > 2 ? 3 : 1
+      print (pos)
+    }
+  `)
+  assert.deepEqual(output, ['1', '1', '1', '3', '3'])
+})
+
+test('a choice chains to the right and reads looser than the operators', () => {
+  const { output } = run(`
+    for i in 0..4 => { print (i < 1 ? "low" : i < 3 ? "mid" : "high") }
+    print (1 + 1 == 2 ? "yes" : "no")
+  `)
+  assert.deepEqual(output, ['low', 'mid', 'mid', 'high', 'yes'])
+})
+
+test('the slot type reaches both halves, so members stay bare', () => {
+  const { scene } = run(`
+    defaults (tier blue)
+    for i in 0..3 => { bulk-inserter (at (i, 0), i > 1 ? left : right) }
+  `)
+  assert.deepEqual(
+    scene.entities.map((e) => directionName(e.dir)),
+    ['east', 'east', 'west'],
+  )
+
+  // The same reach makes a declared type enough for an entity or a recipe.
+  const boxes = run(`
+    for i in 0..3 => {
+      def entity box = i > 1 ? steel-chest : wooden-chest
+      box (at (i, 0))
+    }
+  `).scene
+  assert.deepEqual(
+    boxes.entities.map((e) => e.proto.name),
+    ['wooden-chest', 'wooden-chest', 'steel-chest'],
+  )
+})
+
+test('a choice needs a condition and both halves', () => {
+  assert.match(errorsIn('def x = 3 ? 1 : 2')[0].message, /needs a condition, got int/)
+  assert.match(errorsIn('def x = true ? 1')[0].message, /expected ':'/)
+})
+
+// ── Libraries ─────────────────────────────────────────────────────────────────
+
+test('a library brings its blocks and helpers in, and nothing before that', () => {
+  // `balancer` is written in the interpreter, `side-buffer` in fbl; both arrive together.
+  for (const source of ['balancer (4 to 4)', 'side-buffer (at (0, 0), size 3)']) {
+    const [error] = errorsIn(source)
+    assert.match(error.message, /unknown name/, source)
+    assert.match(error.hint, /it comes from stdlib/, source)
+  }
+
+  const { scene } = run(`
+    import "stdlib"
+    balancer (at (0, 0), 4 to 4)
+    side-buffer (at (7, 0), size 3)
+  `)
+  assert.ok(scene.entities.length > 20)
+  assert.equal(scene.findCollisions().length, 0)
+})
+
+test('import takes a quoted name, and says which libraries there are', () => {
+  assert.match(errorsIn('import "stdlibb"')[0].message, /no library called 'stdlibb'/)
+  assert.match(errorsIn('import "stdlibb"')[0].hint, /"stdlib"/)
+  assert.match(errorsIn('import stdlib')[0].message, /in quotes/)
+
+  // A lone parenthesised value is grouping, so both spellings read the same.
+  assert.equal(run('import ("stdlib")\nbalancer (4 to 4)').scene.findCollisions().length, 0)
+
+  // Importing twice is not an error and does not define anything twice.
+  const once = run('import "stdlib"\nside-buffer (at (0, 0), size 2)').scene
+  const twice = run('import "stdlib"\nimport "stdlib"\nside-buffer (at (0, 0), size 2)').scene
+  assert.equal(twice.entities.length, once.entities.length)
+})
+
+test("a library's own guard names the library, not one of its line numbers", () => {
+  const [error] = errorsIn(`
+    import "stdlib"
+    side-buffer (at (0, 0), size 1)
+  `)
+  assert.equal(error.message, 'size must be at least 2')
+  assert.equal(error.loc.line, 3, 'the error goes on the call, in the reader\'s own file')
+  assert.match(error.hint, /thrown by 'side-buffer' from stdlib/)
+})
+
+const stdlibWidth = (source) => {
+  const { scene } = run(`import "stdlib"\n${source}`)
+  return [scene.bbox(0, scene.length).w, scene.findCollisions().length]
+}
+
+test('side-buffer spaces itself by the box it was given', () => {
+  // A chest is 1 wide, so four of them with an inserter between each is 7.
+  assert.deepEqual(stdlibWidth('side-buffer (at (0, 0), size 4)'), [7, 0])
+  // A tank is 3 wide, so three of them come to 11.
+  assert.deepEqual(stdlibWidth('side-buffer (at (0, 0), box storage-tank, size 3)'), [11, 0])
+})
+
+test('line-buffer alternates inserter and box, and ends on an inserter', () => {
+  const { scene } = run('import "stdlib"\nline-buffer (at (0, 0), size 3)')
+  assert.deepEqual(
+    scene.entities.map((e) => [e.proto.name, e.x]),
+    [
+      ['bulk-inserter', 0],
+      ['steel-chest', 1],
+      ['bulk-inserter', 2],
+      ['steel-chest', 3],
+      ['bulk-inserter', 4],
+      ['steel-chest', 5],
+      ['bulk-inserter', 6],
+    ],
+  )
+  assert.equal(scene.findCollisions().length, 0)
+
+  // The trailing inserter follows the box's own width, not a fixed stride of two.
+  assert.deepEqual(stdlibWidth('line-buffer (at (0, 0), box storage-tank, size 3)'), [13, 0])
+  assert.match(errorsIn('import "stdlib"\nline-buffer (at (0, 0), size 0)')[0].message, /at least 1/)
+})
+
+test('the library examples build clean', () => {
+  for (const file of ['stdlib.fbl', 'helpers.fbl']) {
+    const source = readFileSync(join(ROOT, 'examples', file), 'utf8')
+    const { scene } = run(source)
+    assert.equal(scene.findCollisions().length, 0, file)
+    assert.ok(scene.entities.length > 0, file)
+  }
+})
+
+// ── transform ─────────────────────────────────────────────────────────────────
+
+import { directionName } from '../dist-node/core.mjs'
+
+const shape = (scene) =>
+  scene.entities.map((e) => [e.proto.name, e.x, e.y, directionName(e.dir)])
+
+test('a mirror moves positions and turns the directions with them', () => {
+  const body = `
+    bulk-inserter (at (0, 0), south)
+    steel-chest (at (0, 1))
+    bulk-inserter (at (1, 1), east)
+    steel-chest (at (2, 1))
+  `
+  assert.deepEqual(shape(run(body).scene), [
+    ['bulk-inserter', 0, 0, 'south'],
+    ['steel-chest', 0, 1, 'north'],
+    ['bulk-inserter', 1, 1, 'east'],
+    ['steel-chest', 2, 1, 'north'],
+  ])
+
+  assert.deepEqual(shape(run(`transform (flip-h) => {${body}}`).scene), [
+    ['bulk-inserter', 2, 0, 'south'],
+    ['steel-chest', 2, 1, 'north'],
+    ['bulk-inserter', 1, 1, 'west'],
+    ['steel-chest', 0, 1, 'north'],
+  ])
+
+  // A chest cannot be turned, so it keeps facing north wherever it lands. Turning it would
+  // put a direction on an entity the game does not accept one for.
+  assert.deepEqual(shape(run(`transform (flip-v) => {${body}}`).scene), [
+    ['bulk-inserter', 0, 1, 'north'],
+    ['steel-chest', 0, 0, 'north'],
+    ['bulk-inserter', 1, 0, 'east'],
+    ['steel-chest', 2, 0, 'north'],
+  ])
+
+  // Both axes is a half turn, so every direction is its opposite.
+  assert.deepEqual(shape(run(`transform (flip-hv) => {${body}}`).scene), [
+    ['bulk-inserter', 2, 1, 'north'],
+    ['steel-chest', 2, 0, 'north'],
+    ['bulk-inserter', 1, 0, 'west'],
+    ['steel-chest', 0, 0, 'north'],
+  ])
+})
+
+test('a footprint reflects whole, so a wide entity lands where it would have been built', () => {
+  // The splitter is 1×2 and the machine is 3×3, so the box is 8×3.
+  const { scene } = run(`
+    transform (flip-h) => {
+      express-splitter (at (0, 0), east)
+      assembling-machine-3 (at (5, 0), recipe iron-gear-wheel)
+    }
+  `)
+  assert.deepEqual(shape(scene), [
+    ['express-splitter', 7, 0, 'west'],
+    ['assembling-machine-3', 0, 0, 'north'],
+  ])
+  assert.equal(scene.findCollisions().length, 0)
+})
+
+test('one mirror swaps handedness, two put it back', () => {
+  const body = `
+    express-splitter (at (0, 0), east, in-priority right, out-priority left)
+    belt (from (0, 3) to (3, 3), blue, content (iron-ore left, coal right))
+  `
+  const handed = (apply) => {
+    const { scene } = run(`defaults (tier blue)\n${apply ? `transform (${apply}) => {${body}}` : body}`)
+    const splitter = scene.entities.find((e) => e.proto.kind === 'splitter')
+    const belt = scene.entities.find((e) => e.proto.kind === 'belt')
+    return [splitter.inPriority, splitter.outPriority, ...belt.content.map((c) => c.side)]
+  }
+
+  assert.deepEqual(handed(null), ['right', 'left', 'left', 'right'])
+  assert.deepEqual(handed('flip-h'), ['left', 'right', 'right', 'left'])
+  assert.deepEqual(handed('flip-v'), ['left', 'right', 'right', 'left'])
+  assert.deepEqual(handed('flip-hv'), ['right', 'left', 'left', 'right'], 'mirrored twice is unmirrored')
+  // A turn is not a mirror: left stays left, because the whole thing turned with it.
+  assert.deepEqual(handed('rotate-cw'), ['right', 'left', 'left', 'right'])
+  assert.deepEqual(handed('rotate-ccw'), ['right', 'left', 'left', 'right'])
+})
+
+test('a quarter turn swaps the box, and every footprint inside it', () => {
+  const body = `
+    express-splitter (at (0, 0), east)
+    bulk-inserter (at (4, 0), east)
+    assembling-machine-3 (at (5, 0), recipe iron-gear-wheel)
+  `
+  const box = (source) => {
+    const { scene } = run(`defaults (tier blue)\n${source}`)
+    const rect = scene.bbox(0, scene.length)
+    return { rect: [rect.w, rect.h], shape: shape(scene), collisions: scene.findCollisions().length }
+  }
+
+  assert.deepEqual(box(body).rect, [8, 3])
+
+  const cw = box(`transform (rotate-cw) => {${body}}`)
+  assert.deepEqual(cw.rect, [3, 8], 'the box turns with its contents')
+  assert.deepEqual(cw.shape, [
+    // 1×2 facing east becomes 2×1 facing south, at the top where the left edge went.
+    ['express-splitter', 1, 0, 'south'],
+    ['bulk-inserter', 2, 4, 'south'],
+    ['assembling-machine-3', 0, 5, 'east'],
+  ])
+  assert.equal(cw.collisions, 0)
+
+  const ccw = box(`transform (rotate-ccw) => {${body}}`)
+  assert.deepEqual(ccw.rect, [3, 8])
+  assert.deepEqual(ccw.shape, [
+    ['express-splitter', 0, 7, 'north'],
+    ['bulk-inserter', 0, 3, 'north'],
+    ['assembling-machine-3', 0, 0, 'west'],
+  ])
+  assert.equal(ccw.collisions, 0)
+
+  // Four turns is where it started.
+  const round = run(`defaults (tier blue)
+    transform (rotate-cw) => { transform (rotate-cw) => { transform (rotate-cw) => { transform (rotate-cw) => {${body}} } } }
+  `).scene
+  assert.deepEqual(shape(round), box(body).shape)
+})
+
+test('transform needs one it knows', () => {
+  assert.match(errorsIn('transform => { steel-chest (at (0, 0)) }')[0].message, /needs apply/)
+  assert.match(errorsIn('transform (sideways) => { steel-chest (at (0, 0)) }')[1].message, /not a transform/)
+})
+
+test('what a transform contains is built normally, auto and all', () => {
+  const { scene } = run(`
+    transform (flip-h) => {
+      steel-chest (at (3, 0))
+      belt (from (0, 0) to (6, 0), blue, auto)
+    }
+  `)
+  const pair = scene.entities.filter((e) => e.proto.kind === 'underground-belt')
+  assert.equal(pair.length, 2, 'the tunnel is planned before the mirror, and mirrors with it')
+  assert.deepEqual(
+    pair.map((e) => [e.x, e.undergroundType, directionName(e.dir)]),
+    [
+      [4, 'input', 'west'],
+      [2, 'output', 'west'],
+    ],
+  )
+  assert.equal(scene.findCollisions().length, 0)
+})
+
 // ── Belt topology ─────────────────────────────────────────────────────────────
 
 import { beltOrientation, isBeltish, tileIndex } from '../dist-node/core.mjs'
@@ -543,6 +896,37 @@ test('every quarter turn resolves to its own sprite', () => {
   }
 })
 
+test('a splitter feeds both its lanes, so a belt turning off either one bends', () => {
+  // A splitter is two tiles wide and its position is only one of them. Deciding who feeds
+  // whom by adding a direction to that origin missed whichever lane it was not on, and the
+  // belt came out straight.
+  const cases = [
+    ['express-splitter (at (7, 0), west)\nbelt (at (6, 0), north)', 'east-to-north'],
+    ['express-splitter (at (7, 0), west)\nbelt (at (6, 1), north)', 'east-to-north'],
+    ['express-splitter (at (7, 0), west)\nbelt (at (6, 1), south)', 'east-to-south'],
+    ['express-splitter (at (0, 0), east)\nbelt (at (1, 1), south)', 'west-to-south'],
+    ['express-splitter (at (0, 1), north)\nbelt (at (1, 0), east)', 'south-to-east'],
+    ['express-splitter (at (0, 0), south)\nbelt (at (0, 1), west)', 'north-to-west'],
+  ]
+  for (const [source, expected] of cases) {
+    const { scene } = run(`defaults (tier blue)\n${source}`)
+    const belts = tileIndex(scene.entities, isBeltish)
+    const belt = scene.entities.find((e) => e.proto.kind === 'belt')
+    assert.equal(beltOrientation(belt, belts), expected, source)
+  }
+
+  // Carrying straight on out of a splitter is not a corner, and neither is facing back into
+  // one — that is a jam.
+  for (const [source, expected] of [
+    ['express-splitter (at (0, 0), east)\nbelt (at (1, 0), east)', 'east'],
+    ['express-splitter (at (0, 0), east)\nbelt (at (1, 0), west)', 'west'],
+  ]) {
+    const { scene } = run(`defaults (tier blue)\n${source}`)
+    const belts = tileIndex(scene.entities, isBeltish)
+    assert.equal(beltOrientation(scene.entities.find((e) => e.proto.kind === 'belt'), belts), expected, source)
+  }
+})
+
 test('an underground exit feeds the tile in front of it, its entry does not', () => {
   const { scene } = run(`
     belt        (from (0, 0) to (1, 0), red)
@@ -552,6 +936,17 @@ test('an underground exit feeds the tile in front of it, its entry does not', ()
   const belts = tileIndex(scene.entities, isBeltish)
   const corner = scene.entities.find((e) => e.x === 7 && e.y === 0)
   assert.equal(beltOrientation(corner, belts), 'west-to-south')
+})
+
+test('the registry knows which items travel by pipe', () => {
+  assert.ok(registry.fluids.has('water'))
+  assert.ok(registry.fluids.has('petroleum-gas'))
+  assert.ok(!registry.fluids.has('iron-plate'))
+
+  // Which is what decides whether a machine grows a pipe stub in the preview.
+  const fluidsIn = (id) => Object.keys(registry.recipes.get(id).in).filter((k) => registry.fluids.has(k)).length
+  assert.equal(fluidsIn('concrete'), 1, 'concrete takes water')
+  assert.equal(fluidsIn('iron-gear-wheel'), 0)
 })
 
 // ── Sprite variant names ──────────────────────────────────────────────────────
@@ -659,21 +1054,24 @@ test('belt-family art covers the whole entity, never half of it', async (t) => {
 
 import { BALANCER_LIMIT, balancerSizes, hasBalancer } from '../dist-node/core.mjs'
 
+/** `balancer` lives in the standard library, so every one of these has to let it in. */
+const withStdlib = (source) => `import "stdlib"\n${source}`
+
 test('a balancer expands into belts of the chosen tier', () => {
-  const { scene } = run('balancer (4 to 8, left, red)')
+  const { scene } = run(withStdlib('balancer (4 to 8, left, red)'))
   const names = new Set(scene.entities.map((e) => e.proto.name))
   assert.deepEqual([...names].sort(), ['fast-splitter', 'fast-transport-belt', 'fast-underground-belt'])
 })
 
 test('the flow direction rotates the whole layout', () => {
-  const north = run('balancer (4 to 4, north)').scene.bbox()
-  const east = run('balancer (4 to 4, east)').scene.bbox()
+  const north = run(withStdlib('balancer (4 to 4, north)')).scene.bbox()
+  const east = run(withStdlib('balancer (4 to 4, east)')).scene.bbox()
   assert.deepEqual([east.w, east.h], [north.h, north.w])
 })
 
 test('`left` and `west` mean the same thing', () => {
-  const left = run('balancer (2 to 4, left)').scene
-  const west = run('balancer (2 to 4, west)').scene
+  const left = run(withStdlib('balancer (2 to 4, left)')).scene
+  const west = run(withStdlib('balancer (2 to 4, west)')).scene
   assert.deepEqual(
     left.entities.map((e) => [e.proto.name, e.x, e.y, e.dir]),
     west.entities.map((e) => [e.proto.name, e.x, e.y, e.dir]),
@@ -681,14 +1079,14 @@ test('`left` and `west` mean the same thing', () => {
 })
 
 test('a pair the library does not have is refused before anything is placed', () => {
-  const result = compileFor('balancer (9 to 3)')
+  const result = compileFor(withStdlib('balancer (9 to 3)'))
   assert.equal(result.ran, false)
   assert.match(result.diagnostics[0].message, /no 9 to 3 balancer/)
   assert.match(result.diagnostics[0].hint, new RegExp(`1 to ${BALANCER_LIMIT}`))
 })
 
 test('a diagonal balancer is refused', () => {
-  const [error] = errorsIn('balancer (4 to 4, northeast)')
+  const [error] = errorsIn(withStdlib('balancer (4 to 4, northeast)'))
   assert.match(error.message, /runs along an axis/)
 })
 
@@ -700,7 +1098,7 @@ test('every balancer in the library places cleanly, in every direction', () => {
     if (!hasBalancer(Number(from), Number(to))) continue
 
     for (const direction of ['north', 'east', 'south', 'west']) {
-      const result = compileFor(`balancer (${from} to ${to}, ${direction})`)
+      const result = compileFor(withStdlib(`balancer (${from} to ${to}, ${direction})`))
       if (!result.ran) {
         failures.push(`${key} ${direction}: ${result.diagnostics[0]?.message}`)
         continue
@@ -762,8 +1160,7 @@ test('a gap the tier cannot reach names a tier that can', () => {
 
 test('auto refuses what no underground could do', () => {
   const cases = [
-    ['steel-chest (at (0, 0))\nbelt (from (0, 0) to (4, 0), red, auto)', /starts on something/],
-    ['steel-chest (at (2, 0))\nsteel-chest (at (4, 0))\nbelt (from (0, 0) to (6, 0), red, auto)', /too close together/],
+    ['steel-chest (at (0, 0))\nbelt (from (0, 0) to (4, 0), red, auto)', /starts on Steel chest/],
     ['steel-chest (at (3, 0))\nbelt (from (0, 0), via (3, 0), to (3, 3), red, auto)', /turns at \(3, 0\)/],
   ]
   for (const [source, expected] of cases) {
@@ -772,14 +1169,202 @@ test('auto refuses what no underground could do', () => {
   }
 })
 
-test('auto only sees what was already placed', () => {
-  // The chest comes after the belt, so the belt has nothing to avoid and they overlap.
+test('a line already going our way is joined, not tunnelled under', () => {
+  // A splitter dropped into a run is part of the run: the belt feeds it and carries on.
+  const inline = run(`
+    express-splitter (at (5, 0), east)
+    belt (from (0, 0) to (10, 0), blue, auto)
+  `).scene
+  assert.equal(inline.entities.filter((e) => e.proto.kind === 'underground-belt').length, 0)
+  assert.equal(inline.findCollisions().length, 0)
+
+  // Turned across the line it is an obstacle like any other.
+  const across = run(`
+    express-splitter (at (5, 0), north)
+    belt (from (0, 0) to (10, 0), blue, auto)
+  `).scene
+  assert.equal(across.entities.filter((e) => e.proto.kind === 'underground-belt').length, 2)
+  assert.equal(across.findCollisions().length, 0)
+})
+
+test('two auto belts along the same line merge', () => {
   const { scene } = run(`
+    belt (from (0, 0) to (10, 0), blue, auto)
+    belt (from (5, 0) to (15, 0), blue, auto)
+  `)
+  assert.equal(scene.entities.length, 16, 'one belt per tile, not two on the overlap')
+  assert.equal(scene.entities.filter((e) => e.proto.kind === 'underground-belt').length, 0)
+  assert.equal(scene.findCollisions().length, 0)
+
+  // Pointing the other way they cannot both be there, and the error says which way it runs.
+  const [error] = errorsIn(`
+    belt (from (10, 0) to (0, 0), blue, auto)
+    belt (from (5, 0) to (15, 0), blue, auto)
+  `)
+  assert.match(error.message, /starts on Express transport belt/)
+  assert.match(error.hint, /runs west/)
+})
+
+test('a tunnel surfaces before a splitter when there is room for it', () => {
+  const { scene } = run(`
+    steel-chest (at (3, 0))
+    express-splitter (at (5, 0), east)
+    belt (from (0, 0) to (10, 0), blue, auto)
+  `)
+  const pair = scene.entities.filter((e) => e.proto.kind === 'underground-belt')
+  assert.deepEqual(
+    pair.map((e) => [e.x, e.undergroundType]),
+    [
+      [2, 'input'],
+      [4, 'output'],
+    ],
+    'under the chest, up on the free tile, then straight into the splitter',
+  )
+  assert.equal(scene.findCollisions().length, 0)
+})
+
+test('obstacles a tile apart share one longer tunnel', () => {
+  // The tile between the chests cannot surface: it would have to be the exit of one pair and
+  // the entry of the next at once. So the belt stays under it.
+  const { scene } = run(`
+    steel-chest (at (2, 0))
+    steel-chest (at (4, 0))
+    steel-chest (at (6, 0))
+    belt (from (0, 0) to (8, 0), blue, auto)
+  `)
+  const pair = scene.entities.filter((e) => e.proto.kind === 'underground-belt')
+  assert.equal(pair.length, 2, 'one pair, not three')
+  assert.deepEqual(
+    pair.map((e) => [e.x, e.undergroundType]),
+    [
+      [1, 'input'],
+      [7, 'output'],
+    ],
+  )
+  assert.equal(scene.findCollisions().length, 0)
+
+  // Merging does not buy reach: a tier that cannot span the whole thing still says so.
+  const [error] = errorsIn(`
+    steel-chest (at (2, 0))
+    steel-chest (at (4, 0))
+    steel-chest (at (6, 0))
+    belt (from (0, 0) to (8, 0), yellow, auto)
+  `)
+  assert.match(error.message, /5 tiles to tunnel .* reaches 4/)
+})
+
+test('route can be defaulted, so a bus need not say auto on every line', () => {
+  const obstacles = `
+    steel-chest (at (3, 0))
+    steel-chest (at (3, 4))
+  `
+  const tunnels = (source) => {
+    const { scene } = run(source)
+    return [scene.entities.filter((e) => e.proto.kind === 'underground-belt').length, scene.findCollisions().length]
+  }
+
+  const runs = `${obstacles}
+    belt (from (0, 0) to (6, 0))
+    belt (from (0, 4) to (6, 4))
+  `
+  assert.deepEqual(tunnels(`defaults (tier blue)\n${runs}`), [0, 2], 'without it they lie over the chests')
+  assert.deepEqual(tunnels(`defaults (tier blue, route auto)\n${runs}`), [4, 0])
+
+  // A value can find its own slot, the way it does everywhere else in the language.
+  assert.deepEqual(tunnels(`defaults (blue, auto)\n${runs}`), [4, 0])
+  assert.deepEqual(tunnels(`defaults belt (auto)\ndefaults (tier blue)\n${runs}`), [4, 0])
+
+  // The call still wins.
+  assert.deepEqual(
+    tunnels(`defaults (tier blue, auto)\n${obstacles}\nbelt (from (0, 0) to (6, 0), direct)`),
+    [0, 1],
+  )
+
+  // A bare value that resolves to nothing is still a mistake, not the first slot going.
+  assert.match(errorsIn('defaults (wat)')[1].message, /slot value/)
+})
+
+test('auto reads the finished blueprint, not the half of it written above', () => {
+  // Routing waits for the program to end, so where the obstacle is written cannot matter.
+  const before = run(`
+    steel-chest (at (3, 0))
+    belt (from (0, 0) to (6, 0), red, auto)
+  `).scene
+  const after = run(`
     belt (from (0, 0) to (6, 0), red, auto)
     steel-chest (at (3, 0))
+  `).scene
+
+  const shape = (scene) =>
+    scene.entities.map((e) => [e.proto.name, e.x, e.y, e.undergroundType ?? '']).sort()
+  assert.deepEqual(shape(after), shape(before))
+  assert.equal(after.entities.filter((e) => e.proto.kind === 'underground-belt').length, 2)
+  assert.equal(after.findCollisions().length, 0)
+
+  // Same for a splitter dropped into the run: written either side, it merges.
+  const merged = (source) => {
+    const { scene } = run(`defaults (tier blue, auto)\n${source}`)
+    return [scene.entities.length, scene.entities.filter((e) => e.proto.kind === 'underground-belt').length, scene.findCollisions().length]
+  }
+  const first = 'express-splitter (at (5, 0), east)\nbelt (from (0, 0) to (10, 0))'
+  const last = 'belt (from (0, 0) to (10, 0))\nexpress-splitter (at (5, 0), east)'
+  assert.deepEqual(merged(last), merged(first))
+  assert.deepEqual(merged(last), [11, 0, 0])
+
+  // Without `auto` a belt is laid exactly as written, and still collides.
+  const plain = run(`
+    belt (from (0, 0) to (6, 0), red)
+    steel-chest (at (3, 0))
+  `).scene
+  assert.equal(plain.findCollisions().length, 1)
+})
+
+// ── throw ─────────────────────────────────────────────────────────────────────
+
+test('throw stops the build with the author\'s own message', () => {
+  const result = compileFor('throw "size must be at least 2"')
+  assert.equal(result.ran, false)
+  assert.equal(result.scene.entities.length, 0)
+  assert.deepEqual(
+    result.diagnostics.map((d) => [d.severity, d.message, d.loc.line]),
+    [['error', 'size must be at least 2', 1]],
+  )
+})
+
+test('a guard inside a block reports at the call, and names the block', () => {
+  const source = `
+    defblock bank (int size) => {
+      if size < 2 => { throw "size must be at least 2" }
+      for i in 0..size => { steel-chest (at (i, 0)) }
+    }
+    bank (at (0, 0), size 4)
+    bank (at (0, 2), size 1)
+  `
+  const [error] = errorsIn(source)
+  assert.equal(error.message, 'size must be at least 2')
+  // Line 7 is the offending call; line 3 is the guard that caught it.
+  assert.equal(error.loc.line, 7, 'the error goes where the fix goes')
+  assert.match(error.hint, /thrown by 'bank' on line 3/)
+
+  // The same block is fine when the guard passes, and nothing is left behind by the failure.
+  const { scene } = run(source.replace('size 1', 'size 3'))
+  assert.equal(scene.entities.length, 7)
+})
+
+test('a thrown message joins a list the way print does', () => {
+  const [error] = errorsIn(`
+    defblock bank (int size) => {
+      if size < 2 => { throw ("size must be at least 2, got", size) }
+      steel-chest (at (0, 0))
+    }
+    bank (size 1)
   `)
-  assert.equal(scene.entities.filter((e) => e.proto.kind === 'underground-belt').length, 0)
-  assert.equal(scene.findCollisions().length, 1)
+  assert.equal(error.message, 'size must be at least 2, got 1')
+})
+
+test('throw needs something to say', () => {
+  const [error] = errorsIn('throw')
+  assert.match(error.message, /throw needs a message/)
 })
 
 // ── Cost ──────────────────────────────────────────────────────────────────────
@@ -796,6 +1381,18 @@ test('a belt costs one and a half ore, because the recipe makes two', () => {
   const raw = rawOf('transport-belt (at (0, 0))')
   // 1 belt = ½ iron plate + ½ gear (1 plate) = 1.5 plate = 1.5 ore.
   assert.equal(raw['iron-ore'], 1.5)
+})
+
+test('an item nothing makes is where the trail stops, not a hole', async () => {
+  // Wood is chopped from trees and holmium ore comes out of scrap, which the model does not
+  // follow. Neither is a gap in the data: both are simply inputs.
+  for (const id of ['2x1', '1.1']) {
+    const reg = await registryFor(id, id === '1.1' ? V11 : { ...SPA, id })
+    const names = [...reg.entities.keys()]
+    const scene = compileFor(names.map((n, i) => `${n} (at (${i * 12}, 0))`).join('\n'), reg).scene
+    const raw = new Set(computeCost(scene, reg).raw.map((e) => e.item))
+    assert.ok(raw.has('wood'), `${id}: wood is an input`)
+  }
 })
 
 test('the trail stops at what the game extracts, not at what has no recipe', () => {
@@ -816,7 +1413,6 @@ test('everything an example places has a known cost', () => {
     const source = readFileSync(join(ROOT, 'examples', file), 'utf8')
     const { scene } = run(source)
     const cost = computeCost(scene, registry)
-    assert.deepEqual(cost.unresolved, [], file)
     assert.ok(cost.raw.length > 0, file)
     assert.ok(
       cost.items.reduce((n, e) => n + e.amount, 0) >= scene.entities.length,
@@ -972,6 +1568,27 @@ test('a bare name is a value when it is bound, and a bare label when it is not',
   assert.match(error.hint, /dir takes direction/)
 })
 
+test('a default is read as the type it was declared', () => {
+  // Entities, recipes and items are too large a vocabulary to guess a bare name from, so the
+  // declared type is what tells the checker how to read it. Without that the default for an
+  // `entity` parameter was rejected as an unknown name.
+  const { scene } = run(`
+    defblock bay (entity box = steel-chest, recipe r = iron-gear-wheel, item fuel = coal) => {
+      box (at (0, 0))
+      assembling-machine-3 (at (1, 0), recipe r)
+    }
+    bay (at (0, 0))
+    bay (at (0, 4), box iron-chest)
+    bay (at (0, 8), entity wooden-chest)
+  `)
+  assert.deepEqual(
+    scene.entities.filter((e) => e.proto.kind === 'container').map((e) => e.proto.name),
+    ['steel-chest', 'iron-chest', 'wooden-chest'],
+    'the slot answers to its own name and to its type',
+  )
+  assert.equal(scene.findCollisions().length, 0)
+})
+
 test('naming a parameter after its slot lets a bare value find it', () => {
   // A bare direction fills `dir`. A parameter called `d` is reachable only by label.
   const [error] = errorsIn(`
@@ -986,6 +1603,49 @@ test('naming a parameter after its slot lets a bare value find it', () => {
     pad (right)
   `)
   assert.equal(scene.entities[0].dir, 4)
+})
+
+test('a layout packs along its axis and leaves the other one alone', () => {
+  // The plant sits above the line and the inserter on it. A row that flattened the group to
+  // its bounding box would drop both onto the belt, and the belt would start inside a plant.
+  const { scene } = run(`
+    defaults (tier blue)
+    row (gap 2) for i in 0..4 => {
+      electromagnetic-plant (at (-5, -3), recipe quality-module)
+      bulk-inserter (at (-1, 0), west)
+    }
+    belt (from (24, 0) to (-12, 0), auto)
+  `)
+
+  assert.deepEqual(
+    find(scene, 'electromagnetic-plant').map((e) => [e.x, e.y]),
+    [
+      [-5, -3],
+      [2, -3],
+      [9, -3],
+      [16, -3],
+    ],
+    'each group keeps its own shape and starts a gap past the one before',
+  )
+
+  const tunnels = scene.entities.filter((e) => e.proto.kind === 'underground-belt')
+  assert.equal(tunnels.length, 8, 'one pair under each group')
+  assert.equal(scene.findCollisions().length, 0)
+})
+
+test('align opts into moving things across the axis', () => {
+  const of = (source) => run(source).scene.entities.map((e) => e.y)
+
+  // Two items of different heights, the second deliberately dropped a tile.
+  const source = (align) => `
+    row (${align}) => {
+      steel-chest (at (0, 0))
+      assembling-machine-3 (at (0, 1))
+    }
+  `
+  assert.deepEqual(of(source('gap 1')), [0, 1], 'left where they were written')
+  assert.deepEqual(of(source('gap 1, align start')), [0, 0], 'flush to the leading edge')
+  assert.deepEqual(of(source('gap 1, align end')), [2, 0], 'flush to the trailing edge')
 })
 
 test('auto sees its neighbours where a layout will actually put them', () => {

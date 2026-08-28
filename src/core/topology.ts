@@ -38,6 +38,20 @@ export function isPipeish(entity: PlacedEntity): boolean {
 }
 
 /** Every tile a multi-tile entity occupies, so neighbour lookups do not miss its edges. */
+/** Everything that carries items along in a straight line. */
+export const LINE_KINDS = new Set(['belt', 'underground-belt', 'splitter'])
+
+/**
+ * Whether an entity is part of the same transport line as a belt heading a given way — a
+ * belt, a tunnel end or a splitter already pointing there. Such a thing is not an obstacle:
+ * the belt runs into it and comes out the far side, which is how a splitter drops into a run
+ * without the belt diving around it, and how two belts along the same line merge.
+ */
+export function flowsWith(entity: PlacedEntity, heading: number | undefined): boolean {
+  if (heading === undefined) return false
+  return LINE_KINDS.has(entity.proto.kind) && entity.dir === heading
+}
+
 export function tileIndex(entities: PlacedEntity[], accept: (e: PlacedEntity) => boolean): TileIndex {
   const index: TileIndex = new Map()
   for (const entity of entities) {
@@ -64,8 +78,10 @@ function entrySides(entity: PlacedEntity, belts: TileIndex): number[] {
     // An underground entry swallows items; only its exit feeds the tile in front of it.
     if (neighbour.proto.kind === 'underground-belt' && neighbour.undergroundType !== 'output') continue
 
-    const out = STEP[neighbour.dir]
-    if (out && neighbour.x + out.x === entity.x && neighbour.y + out.y === entity.y) sides.push(side)
+    // The neighbour feeds us when it is pointing our way. Comparing directions rather than
+    // adding its `dir` to its origin is what makes a splitter work: it is two tiles wide, and
+    // its origin is only one of them, so the arithmetic missed whichever lane it was not on.
+    if (neighbour.dir === oppositeDirection(side)) sides.push(side)
   }
 
   return sides

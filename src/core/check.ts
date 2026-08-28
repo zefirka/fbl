@@ -3,11 +3,14 @@ import type { Arg, Expr, Module, Param, Stmt, TypeExpr } from './ast'
 import type { Diagnostic, Loc } from './errors'
 import type { ProtoRegistry } from './proto'
 import { BALANCER_LIMIT, hasBalancer } from './balancer'
+import { GATED_HELPERS, MODULES, moduleOffering } from './modules'
 import { readContent, readFilters } from './metadata'
 import {
   ANY_ENTITY_SLOTS,
   bareSlot,
   blockSlots,
+  DEFAULT_SLOT_NAMES,
+  DEFAULT_SLOTS,
   entitySlots,
   findFunction,
   findSlot,
@@ -26,16 +29,6 @@ export interface BlockSignature {
 }
 
 /** Slots that may be preset for a whole module or block. Position is deliberately not one. */
-const DEFAULTABLE: Record<string, Type> = {
-  tier: T.enum('tier'),
-  quality: T.enum('quality'),
-  dir: T.enum('direction'),
-  recipe: T.enum('recipe'),
-  modules: T.array(T.module),
-  gap: T.int,
-  align: T.enum('align'),
-}
-
 const HANDLE_FIELDS: Record<string, Type> = {
   x: T.int,
   y: T.int,
@@ -83,8 +76,16 @@ export class Checker {
   readonly blocks = new Map<string, BlockSignature>()
   private readonly universe: Universe
 
-  constructor(private readonly registry: ProtoRegistry) {
+  /** Native helpers the imported libraries unlock. */
+  private readonly unlocked: Set<string>
+
+  constructor(
+    private readonly registry: ProtoRegistry,
+    /** Libraries this program imported. */
+    imported: ReadonlySet<string> = new Set(),
+  ) {
     this.universe = new Universe(registry)
+    this.unlocked = new Set([...imported].flatMap((name) => MODULES[name]?.helpers ?? []))
   }
 
   private error(message: string, loc?: Loc, hint?: string): void {
@@ -161,7 +162,9 @@ export class Checker {
         for (const param of statement.params) {
           const type = this.resolveType(param.type)
           if (param.default) {
-            const actual = this.typeOf(param.default, scope)
+            // The declared type is what lets a bare `steel-chest` or `iron-plate` resolve:
+            // entities, recipes and items are too large a vocabulary to guess from.
+            const actual = this.typeOf(param.default, scope, type)
             if (!assignable(actual, type)) {
               this.error(
                 `default for '${param.name}' is ${showType(actual)}, not ${showType(type)}`,
@@ -177,9 +180,11 @@ export class Checker {
 
       case 'def':
       case 'assign': {
-        const actual = this.typeOf(statement.value, scope)
-        if (statement.type) {
-          const declared = this.resolveType(statement.type)
+        // The declared type is what lets a bare `steel-chest` resolve, the same as it does
+        // for a parameter's default: entities and recipes are too large to guess from.
+        const declared = statement.type ? this.resolveType(statement.type) : undefined
+        const actual = this.typeOf(statement.value, scope, declared)
+        if (statement.type && declared) {
           if (!assignable(actual, declared)) {
             this.error(
               `'${statement.name}' is declared ${showType(declared)} but the value is ${showType(actual)}`,
@@ -243,6 +248,15 @@ export class Checker {
         return
       }
 
+      case 'import':
+        // Resolved before checking, by putting the library's statements in front.
+        return
+
+      case 'throw':
+        // The message is formatted the way `print` formats its arguments, so anything goes.
+        this.typeOf(statement.value, scope)
+        return
+
       case 'expr':
         this.typeOf(statement.expr, scope)
     }
@@ -263,35 +277,39 @@ export class Checker {
       }
     }
 
+    const settable = `settable: ${DEFAULT_SLOT_NAMES.join(', ')}`
+
     for (const arg of statement.args) {
-      const form = argForm(
-        arg,
-        Object.keys(DEFAULTABLE).map((name) => ({ name, type: DEFAULTABLE[name] })),
-        (name) => this.isCallable(name),
-      )
-      if (!form.slotName) {
-        this.error('defaults needs `slot value` pairs', form.loc, `settable: ${Object.keys(DEFAULTABLE).join(', ')}`)
+      const form = argForm(arg, DEFAULT_SLOTS, (name) => this.isCallable(name))
+
+      // An unlabelled value finds its slot by type, as it does on an entity: `defaults (blue)`
+      // is the tier, `defaults (auto)` the route. A name that resolved to nothing is `any`,
+      // which would match the first slot going, so it has to stay an error.
+      let name = form.slotName
+      if (!name) {
+        const type = this.typeOf(form.expr, scope)
+        name = type.k === 'any' ? undefined : bareSlot(DEFAULT_SLOTS, type)?.name
+      }
+      if (!name) {
+        this.error('defaults needs `slot value` pairs', form.loc, settable)
         continue
       }
+
       if (statement.target) {
         const proto = this.registry.entities.get(statement.target)
-        if (proto && !findSlot(entitySlots(proto, this.registry.profile.supportsQuality), form.slotName)) {
-          this.warn(`${proto.label} has no '${form.slotName}' slot, so this default does nothing`, form.labelLoc)
+        if (proto && !findSlot(entitySlots(proto, this.registry.profile.supportsQuality), name)) {
+          this.warn(`${proto.label} has no '${name}' slot, so this default does nothing`, form.labelLoc)
         }
       }
 
-      const expected = DEFAULTABLE[form.slotName]
+      const expected = findSlot(DEFAULT_SLOTS, name)?.type
       if (!expected) {
-        this.error(
-          `'${form.slotName}' cannot be defaulted`,
-          form.labelLoc,
-          `settable: ${Object.keys(DEFAULTABLE).join(', ')}`,
-        )
+        this.error(`'${name}' cannot be defaulted`, form.labelLoc, settable)
         continue
       }
       const actual = this.typeOf(form.expr, scope, expected)
       if (!assignable(actual, expected)) {
-        this.error(`${form.slotName} expects ${showType(expected)}, got ${showType(actual)}`, form.expr.loc)
+        this.error(`${name} expects ${showType(expected)}, got ${showType(actual)}`, form.expr.loc)
       }
     }
 
@@ -316,9 +334,24 @@ export class Checker {
     }
 
     const helper = HELPER_SLOTS[name]
-    if (helper) return { kind: 'helper', slots: helper, name }
+    if (helper && (!GATED_HELPERS.has(name) || this.unlocked.has(name))) {
+      return { kind: 'helper', slots: helper, name }
+    }
 
     return undefined
+  }
+
+  /**
+   * A function takes plain values, so a `name (…)` argument is a nested call rather than a
+   * label — `print (count (xs))` counts, it does not label.
+   */
+  private functionArg(arg: Arg): Expr {
+    return arg.asCall && arg.label && this.isCallable(arg.label) ? arg.asCall : arg.value
+  }
+
+  /** The same reading, one level down: `at (width (x), 0)` is a call inside a coordinate. */
+  private tupleItems(expr: Extract<Expr, { kind: 'tuple' }>): Expr[] {
+    return expr.entries ? expr.entries.map((entry) => this.functionArg(entry)) : expr.items
   }
 
   /** Whether a bare name could head a call, which is what settles `label (…)` ambiguity. */
@@ -327,7 +360,17 @@ export class Checker {
   }
 
   private suggestEntity(name: string): string | undefined {
-    const near = closestNames(name, [...this.registry.entities.keys(), ...this.blocks.keys()], 2)
+    return this.fromLibrary(name) ?? this.didYouMean(name, [...this.registry.entities.keys(), ...this.blocks.keys()])
+  }
+
+  /** A name that exists but has not been let in yet is a missing import, not a typo. */
+  private fromLibrary(name: string): string | undefined {
+    const module = moduleOffering(name)
+    return module && !this.blocks.has(name) ? `it comes from ${module} — add \`import "${module}"\`` : undefined
+  }
+
+  private didYouMean(name: string, pool: Iterable<string>): string | undefined {
+    const near = closestNames(name, [...pool], 2)
     return near.length ? `did you mean ${near.map((n) => `'${n}'`).join(' or ')}?` : undefined
   }
 
@@ -536,7 +579,9 @@ export class Checker {
         return this.typeOfName(expr.name, expr.loc, scope, expected)
 
       case 'tuple':
-        return T.tuple(expr.items.map((item) => this.typeOf(item, scope, elementOf(expected))))
+        return T.tuple(
+          this.tupleItems(expr).map((item) => this.typeOf(item, scope, elementOf(expected))),
+        )
 
       case 'range': {
         for (const side of [expr.from, expr.to]) {
@@ -559,6 +604,20 @@ export class Checker {
 
       case 'binary':
         return this.typeOfBinary(expr, scope)
+
+      case 'ternary': {
+        const condition = this.typeOf(expr.condition, scope)
+        if (condition.k !== 'bool' && condition.k !== 'any') {
+          this.error(`a choice needs a condition, got ${showType(condition)}`, expr.condition.loc)
+        }
+        // The expected type reaches both halves, so `dir (n > 2 ? left : right)` can write
+        // its members bare, exactly as it would without the choice.
+        const then = this.typeOf(expr.then, scope, expected)
+        const otherwise = this.typeOf(expr.otherwise, scope, expected)
+        if (assignable(then, otherwise)) return otherwise
+        if (assignable(otherwise, then)) return then
+        return T.any
+      }
 
       case 'field':
         return this.typeOfField(expr, scope)
@@ -593,7 +652,7 @@ export class Checker {
             : this.universe.members(target.name)
         const near = closestNames(name, candidates, 2)
         this.error(
-          `'${name}' is not a ${target.name}`,
+          `'${name}' is not ${/^[aeiou]/.test(target.name) ? 'an' : 'a'} ${target.name}`,
           loc,
           near.length ? `did you mean ${near.map((n) => `'${n}'`).join(' or ')}?` : undefined,
         )
@@ -604,11 +663,11 @@ export class Checker {
     const bare = this.universe.bareEnum(name)
     if (bare) return T.enum(bare)
 
-    const near = closestNames(name, [...scope.all(), ...this.blocks.keys(), ...this.registry.entities.keys()], 2)
     this.error(
       `unknown name '${name}'`,
       loc,
-      near.length ? `did you mean ${near.map((n) => `'${n}'`).join(' or ')}?` : undefined,
+      this.fromLibrary(name) ??
+        this.didYouMean(name, [...scope.all(), ...this.blocks.keys(), ...this.registry.entities.keys()]),
     )
     return T.any
   }
@@ -673,13 +732,14 @@ export class Checker {
       }
       expr.args.forEach((arg, index) => {
         const want = fn.params[Math.min(index, fn.params.length - 1)] ?? T.any
-        const got = this.typeOf(arg.value, scope, want)
+        const value = this.functionArg(arg)
+        const got = this.typeOf(value, scope, want)
         if (!assignable(got, want)) {
-          this.error(`'${fn.name}' argument ${index + 1} expects ${showType(want)}, got ${showType(got)}`, arg.value.loc)
+          this.error(`'${fn.name}' argument ${index + 1} expects ${showType(want)}, got ${showType(got)}`, value.loc)
         }
       })
       // `repeat` returns a list of whatever it was handed.
-      if (fn.name === 'repeat' && expr.args[1]) return T.array(this.typeOf(expr.args[1].value, scope))
+      if (fn.name === 'repeat' && expr.args[1]) return T.array(this.typeOf(this.functionArg(expr.args[1]), scope))
       return fn.result
     }
 

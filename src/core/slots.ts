@@ -124,6 +124,24 @@ export const HELPER_SLOTS: Record<string, SlotDef[]> = {
   balancer: BALANCER_SLOTS,
 }
 
+/**
+ * What `defaults` can preset. Every one is `bare`, so a value can find its own slot the way it
+ * does everywhere else: `defaults (blue)` is `defaults (tier blue)`, and `defaults (auto)` puts
+ * every belt below it on `route auto`.
+ */
+export const DEFAULT_SLOTS: SlotDef[] = [
+  { name: 'tier', type: T.enum('tier'), bare: true },
+  { name: 'quality', type: T.enum('quality'), bare: true },
+  { name: 'dir', type: T.enum('direction'), bare: true },
+  { name: 'recipe', type: T.enum('recipe'), bare: true },
+  { name: 'modules', type: T.array(T.module) },
+  { name: 'gap', type: T.int, bare: true },
+  { name: 'align', type: T.enum('align'), bare: true },
+  { name: 'route', type: T.enum('routing'), bare: true, doc: 'auto tunnels under whatever is in the way' },
+]
+
+export const DEFAULT_SLOT_NAMES = DEFAULT_SLOTS.map((slot) => slot.name)
+
 export const LAYOUT_SLOTS: Record<string, SlotDef[]> = {
   at: [{ name: 'at', type: T.coord, required: true }],
   row: [
@@ -133,6 +151,15 @@ export const LAYOUT_SLOTS: Record<string, SlotDef[]> = {
   column: [
     { name: 'gap', type: T.int },
     { name: 'align', type: T.enum('align') },
+  ],
+  transform: [
+    {
+      name: 'apply',
+      type: T.enum('transform'),
+      required: true,
+      bare: true,
+      doc: 'flip-h, flip-v, flip-hv, rotate-cw or rotate-ccw',
+    },
   ],
 }
 
@@ -206,6 +233,10 @@ export const FUNCTIONS: FnSignature[] = [
   { name: 'ingredients', params: [T.enum('recipe')], result: T.array(T.enum('item')) },
   { name: 'craft-time', params: [T.enum('recipe')], result: T.float },
   { name: 'module-slots', params: [T.enum('item')], result: T.int },
+  { name: 'to-entity', params: [T.enum('recipe')], result: T.enum('entity') },
+  { name: 'to-recipe', params: [T.enum('entity')], result: T.enum('recipe') },
+  { name: 'width', params: [T.enum('entity')], result: T.int },
+  { name: 'height', params: [T.enum('entity')], result: T.int },
   { name: 'print', params: [T.any], result: T.void, variadic: true, minArgs: 1 },
 ]
 

@@ -1,4 +1,4 @@
-import { directionName, type PlacedEntity, type PowerReport } from '../core'
+import { directionName, tileIndex, type PlacedEntity, type PowerReport, type TileIndex } from '../core'
 import type { LabIcon } from '../data/dataset'
 import type { LoadedAtlas, SpriteRect } from '../data/sprites'
 import { buildVariantKeys } from './variants'
@@ -18,6 +18,21 @@ const STEP: Record<number, { x: number; y: number }> = {
   4: { x: 1, y: 0 },
   8: { x: 0, y: 1 },
   12: { x: -1, y: 0 },
+}
+
+/** A point given for a north-facing entity, as it lands once the entity is turned. */
+function turnAround(point: [number, number], dir: number): { x: number; y: number } {
+  const [x, y] = point
+  switch (dir % 16) {
+    case 4:
+      return { x: -y, y: x }
+    case 8:
+      return { x: -x, y: -y }
+    case 12:
+      return { x: y, y: -x }
+    default:
+      return { x, y }
+  }
 }
 
 /** The belt's own left, which is the forward vector turned a quarter anticlockwise. */
@@ -73,12 +88,14 @@ export class BlueprintCanvas {
   private entities: PlacedEntity[] = []
   private drawOrder: PlacedEntity[] = []
   private clashing = new Set<PlacedEntity>()
-  private contentHeads = new Set<PlacedEntity>()
+  /** Every tile that holds something, for deciding whether a fluid connection is met. */
+  private occupied: TileIndex = new Map()
   private variants = new Map<PlacedEntity, SpriteRect>()
 
   private atlas: LoadedAtlas | null = null
   private iconSheet: HTMLImageElement | null = null
   private icons: (name: string) => LabIcon | undefined = () => undefined
+  private fluidsOf: (recipe: string) => { inputs: number; outputs: number } | undefined = () => undefined
   private mode: ViewMode = 'sprites'
 
   private power: PowerReport | null = null
@@ -97,6 +114,12 @@ export class BlueprintCanvas {
 
     this.bindPointer()
     new ResizeObserver(() => this.requestRender()).observe(canvas)
+  }
+
+  /** How many of a recipe's ingredients and products travel by pipe. */
+  setFluids(count: (recipe: string) => { inputs: number; outputs: number } | undefined): void {
+    this.fluidsOf = count
+    this.requestRender()
   }
 
   setIcons(sheet: HTMLImageElement | null, icons: (name: string) => LabIcon | undefined): void {
@@ -137,7 +160,7 @@ export class BlueprintCanvas {
   setScene(entities: PlacedEntity[], clashing: Set<PlacedEntity>): void {
     this.entities = entities
     this.clashing = clashing
-    this.contentHeads = this.computeContentHeads()
+    this.occupied = tileIndex(entities, () => true)
     this.drawOrder = [...entities].sort(
       (a, b) => layerOf(a) - layerOf(b) || a.y + a.h - (b.y + b.h) || a.x - b.x,
     )
@@ -146,31 +169,6 @@ export class BlueprintCanvas {
     this.hovered = null
     this.tooltip.hidden = true
     this.requestRender()
-  }
-
-  /**
-   * A belt run carries the same content on every tile, and an icon on each of them would be
-   * a wall of noise. Only the tile where the content starts — the head of the run, and every
-   * tunnel exit, where items surface again — gets to draw it.
-   */
-  private computeContentHeads(): Set<PlacedEntity> {
-    const heads = new Set<PlacedEntity>()
-    const carriers = this.entities.filter((entity) => entity.content?.length)
-    if (carriers.length === 0) return heads
-
-    const byTile = new Map<string, PlacedEntity>()
-    for (const entity of carriers) byTile.set(`${entity.x},${entity.y}`, entity)
-
-    for (const entity of carriers) {
-      const step = STEP[entity.dir]
-      if (!step || entity.proto.kind === 'container') {
-        heads.add(entity)
-        continue
-      }
-      const upstream = byTile.get(`${entity.x - step.x},${entity.y - step.y}`)
-      if (!upstream || upstream.proto.kind === 'container') heads.add(entity)
-    }
-    return heads
   }
 
   private recomputeVariants(): void {
@@ -434,6 +432,82 @@ export class BlueprintCanvas {
     if (origin.x + w < 0 || origin.y + h < 0 || origin.x > width || origin.y > height) return
 
     this.ctx.drawImage(atlas.image, rect.x, rect.y, rect.w, rect.h, origin.x, origin.y, w, h)
+    this.drawFluidConnections(entity, centreX, centreY)
+  }
+
+  /** One more piece of atlas art, placed from the entity's centre like the rest. */
+  private drawPiece(rect: SpriteRect | undefined, centreX: number, centreY: number): void {
+    if (!rect) return
+    const atlas = this.atlas!
+    const scale = this.camera.scale
+    const ppt = atlas.manifest.pixelsPerTile
+    const origin = this.toScreen(centreX + rect.ox, centreY + rect.oy)
+    this.ctx.drawImage(
+      atlas.image,
+      rect.x,
+      rect.y,
+      rect.w,
+      rect.h,
+      origin.x,
+      origin.y,
+      (rect.w / ppt) * scale,
+      (rect.h / ppt) * scale,
+    )
+  }
+
+  /** Whether something that carries fluid stands on a tile, so a connection is met there. */
+  private carriesFluidAt(x: number, y: number): boolean {
+    const neighbour = this.occupied.get(`${Math.floor(x)},${Math.floor(y)}`)
+    if (!neighbour) return false
+    return neighbour.proto.kind === 'pipe' || Boolean(this.atlas?.manifest.fluidBoxes?.[neighbour.proto.name])
+  }
+
+  /**
+   * A machine with a fluid recipe grows pipe stubs where its fluid boxes are. The game keeps
+   * these out of the machine's own art — a dry assembler has no pipes at all — and hands over
+   * one sprite per side, so the stub turns with the machine and meets whatever is next to it.
+   *
+   * Which boxes light up follows the recipe: its fluid ingredients fill the input boxes in
+   * order, its fluid products the output ones.
+   *
+   * Two things about the art are worth writing down, because neither is guessable. It is
+   * placed relative to the connection, not to the machine, so the box's own offset has to be
+   * added. And it is keyed by the side the stub is *seen from* — the sprite for a connection
+   * pointing north is `south` — so reading the key as the connection's own side puts every
+   * pipe on the wrong edge.
+   */
+  private drawFluidConnections(entity: PlacedEntity, centreX: number, centreY: number): void {
+    const atlas = this.atlas!
+    const connections = atlas.manifest.fluidBoxes?.[entity.proto.name]
+    // A pipe works its own shape out from its neighbours; this is for what it connects to.
+    if (!connections || entity.proto.kind === 'pipe') return
+
+    const fluids = entity.recipe ? this.fluidsOf(entity.recipe) : undefined
+    const variants = atlas.manifest.entities[entity.proto.name]
+    let inputs = 0
+    let outputs = 0
+
+    for (const box of connections) {
+      const nth = box.type === 'input' ? inputs++ : outputs++
+      const wanted = box.type === 'input' ? (fluids?.inputs ?? 0) : (fluids?.outputs ?? 0)
+      // A box that switches off is only there when the recipe has a fluid to put in it.
+      if (box.optional && nth >= wanted) continue
+
+      const side = (box.dir + entity.dir) % 16
+      const at = turnAround(box.pos, entity.dir)
+      const x = centreX + at.x
+      const y = centreY + at.y
+
+      if (box.stub) this.drawPiece(variants[`pipe-${box.box}-${directionName((side + 8) % 16)}`], x, y)
+
+      // The cap goes on whatever is still open; a pipe next door fills the hole itself. It
+      // belongs on the tile the pipe would have taken, not on the machine's own.
+      const step = STEP[side] ?? STEP[0]
+      const beyond = { x: x + step.x, y: y + step.y }
+      if (box.cover && !this.carriesFluidAt(beyond.x, beyond.y)) {
+        this.drawPiece(variants[`cover-${box.box}-${directionName(side)}`], beyond.x, beyond.y)
+      }
+    }
   }
 
   /** The colour-coded fallback: used in schematic mode and for anything the atlas lacks. */
@@ -678,7 +752,7 @@ export class BlueprintCanvas {
    */
   private drawContent(entity: PlacedEntity, origin: { x: number; y: number }, w: number, h: number): void {
     const content = entity.content
-    if (!content?.length || !this.iconSheet || !this.contentHeads.has(entity)) return
+    if (!content?.length || !this.iconSheet) return
 
     const scale = this.camera.scale
     if (scale < 20) return
@@ -720,7 +794,8 @@ export class BlueprintCanvas {
       return
     }
 
-    // On a belt the icon rides its own lane, so the picture matches what the items do.
+    // On a belt the icon rides its own lane, on every tile of the run, so the whole path
+    // says what travels along it.
     const size = Math.min(w, h) * 0.34
     for (const entry of content) {
       const lane = entry.side ? laneVector(entity.dir, entry.side) : { x: 0, y: 0 }

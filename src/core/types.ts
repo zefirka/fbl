@@ -7,6 +7,7 @@ export type EnumName =
   | 'quality'
   | 'underground-type'
   | 'align'
+  | 'transform'
   | 'recipe'
   | 'item'
   | 'module-item'
@@ -149,6 +150,13 @@ export const DIRECTIONS = DIRECTION_WORDS
 export const TIERS = ['yellow', 'red', 'blue', 'green', 'normal', 'basic', 'fast', 'express', 'turbo']
 export const UNDERGROUND_TYPES = ['input', 'output']
 export const ALIGNMENTS = ['start', 'center', 'end']
+
+/**
+ * What `transform` does to what its body built. `h` and `v` are the axes the game's own flip
+ * buttons use — `flip-h` swaps left and right, `flip-v` swaps top and bottom — and `flip-hv`
+ * is both at once, which is a half turn. The rotations are quarter turns.
+ */
+export const TRANSFORMS = ['flip-h', 'flip-v', 'flip-hv', 'rotate-cw', 'rotate-ccw']
 export const ROUTINGS = ['auto', 'direct']
 /** Belt lanes and splitter priorities both name a side. */
 export const SIDES = ['left', 'right']
@@ -179,6 +187,8 @@ export class Universe {
         return UNDERGROUND_TYPES
       case 'align':
         return ALIGNMENTS
+      case 'transform':
+        return TRANSFORMS
       case 'routing':
         return ROUTINGS
       case 'side':
@@ -210,7 +220,15 @@ export class Universe {
   }
 
   /** The closed enums a bare name could belong to, in priority order. */
-  private static readonly BARE: EnumName[] = ['direction', 'tier', 'quality', 'underground-type', 'align', 'routing']
+  private static readonly BARE: EnumName[] = [
+    'direction',
+    'tier',
+    'quality',
+    'underground-type',
+    'align',
+    'routing',
+    'transform',
+  ]
 
   /**
    * What a bare name means. The small vocabularies come first; after them a name is taken

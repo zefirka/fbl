@@ -6,40 +6,82 @@ import { directionBetween, type Vec } from './geometry'
  * `auto` does not go around obstacles — it goes under them. Each run of blocked tiles becomes
  * an underground pair: the last free tile before the run is the entry, the first free tile
  * after it is the exit, and everything between is left alone.
+ *
+ * Obstacles standing a single tile apart are covered by one longer tunnel rather than two.
+ * That lone tile has nowhere to go: it would have to be the exit of one pair and the entry of
+ * the next at the same time, so the belt stays under it and surfaces past the far obstacle.
+ *
+ * Not everything standing on the path is an obstacle. A splitter, belt or tunnel already
+ * running the way this belt is heading is part of the same line: the belt joins it and comes
+ * out the other side, which is why a splitter can be dropped into a run without the belt
+ * diving around it.
  */
 export type RouteStep = 'belt' | 'in' | 'out' | 'skip'
+
+/**
+ * What the belt finds on a tile: nothing, something it flows through, or something it has to
+ * go under.
+ */
+export type TileState = 'free' | 'through' | 'blocked'
 
 export type RouteFailure =
   | { reason: 'starts-blocked'; at: Vec }
   | { reason: 'ends-blocked'; at: Vec }
-  /** Two obstacles so close together that one tile would have to be both exit and entry. */
-  | { reason: 'no-room'; at: Vec }
   | { reason: 'too-far'; at: Vec; needed: number }
   /** The path bends between the entry and the exit, which no underground pair can do. */
   | { reason: 'turns'; at: Vec }
 
 export type RouteResult = { ok: true; steps: RouteStep[] } | ({ ok: false } & RouteFailure)
 
-export function planRoute(path: Vec[], blocked: boolean[], reach: number): RouteResult {
+export function planRoute(path: Vec[], tiles: TileState[], reach: number): RouteResult {
   const steps: RouteStep[] = path.map(() => 'belt')
+
+  /** The end of the run of occupied tiles starting at `from`, and whether it needs a tunnel. */
+  const runFrom = (from: number) => {
+    let end = from
+    let tunnel = false
+    while (end < path.length && tiles[end] !== 'free') {
+      tunnel ||= tiles[end] === 'blocked'
+      end++
+    }
+    return { end, tunnel }
+  }
+
   let i = 0
 
   while (i < path.length) {
-    if (!blocked[i]) {
+    if (tiles[i] === 'free') {
       i++
       continue
     }
 
-    let end = i
-    while (end < path.length && blocked[end]) end++
+    const run = runFrom(i)
+
+    // Nothing here but line already going our way — the belt joins it and carries on.
+    if (!run.tunnel) {
+      for (let k = i; k < run.end; k++) steps[k] = 'skip'
+      i = run.end
+      continue
+    }
+
+    // Everything this one tunnel has to clear. A free tile is no use as an exit when the next
+    // obstacle needs a tunnel of its own: it would have to be an entry at the same time. So
+    // the tunnel swallows it and carries on to the far side.
+    let end = run.end
+    for (;;) {
+      const next = end + 1 < path.length ? runFrom(end + 1) : null
+      if (next?.tunnel) {
+        end = next.end
+        continue
+      }
+      break
+    }
 
     const entry = i - 1
     const exit = end
 
     if (entry < 0) return { ok: false, reason: 'starts-blocked', at: path[i] }
     if (exit >= path.length) return { ok: false, reason: 'ends-blocked', at: path[i] }
-    // The tile before this run may already be the exit of the previous one.
-    if (steps[entry] !== 'belt') return { ok: false, reason: 'no-room', at: path[entry] }
 
     const covered = exit - entry - 1
     if (covered > reach) return { ok: false, reason: 'too-far', at: path[i], needed: covered }

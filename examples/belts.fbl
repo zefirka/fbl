@@ -3,6 +3,8 @@
 ; from that, so a path is just a list of corners.
 ; ─────────────────────────────────────────────────────────────────────────────
 
+import "stdlib"                       ; balancer lives there
+
 defaults (tier blue)                  ; every belt below, unless it says otherwise
 
 ; via lists the corners; each leg has to be horizontal or vertical.

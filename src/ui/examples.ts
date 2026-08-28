@@ -2,7 +2,9 @@ import assemblerLine from '../../examples/assembler-line.fbl?raw'
 import belts from '../../examples/belts.fbl?raw'
 import blocks from '../../examples/blocks.fbl?raw'
 import smeltersArray from '../../examples/smelters-array.fbl?raw'
+import helpers from '../../examples/helpers.fbl?raw'
 import sorting from '../../examples/sorting.fbl?raw'
+import stdlib from '../../examples/stdlib.fbl?raw'
 
 export interface Example {
   id: string
@@ -16,4 +18,6 @@ export const EXAMPLES: Example[] = [
   { id: 'blocks', label: 'blocks & layout', source: blocks },
   { id: 'smelters-array', label: 'smelters array', source: smeltersArray },
   { id: 'sorting', label: 'sorting & contents', source: sorting },
+  { id: 'stdlib', label: 'standard library', source: stdlib },
+  { id: 'helpers', label: 'helpers', source: helpers },
 ]

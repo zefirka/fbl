@@ -9,7 +9,11 @@ export interface Token {
 }
 
 /** Longest first, so `=>` wins over `=` and `..` over `.`. */
-const PUNCTUATION = ['=>', '==', '!=', '<=', '>=', '..', '[]', '(', ')', '{', '}', ',', '=', '.', '+', '-', '*', '/', '%', '<', '>']
+// prettier-ignore
+const PUNCTUATION = [
+  '=>', '==', '!=', '<=', '>=', '..', '[]',
+  '(', ')', '{', '}', ',', '=', '.', '+', '-', '*', '/', '%', '<', '>', '?', ':',
+]
 
 /**
  * A comma is optional between arguments, but it is not whitespace: it is what separates

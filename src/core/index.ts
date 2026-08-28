@@ -1,3 +1,6 @@
+import type { Stmt } from './ast'
+import { MODULE_NAMES, MODULES, moduleStatements } from './modules'
+
 export { decodeBlueprint, encodeBlueprint, exportBlueprint, toBlueprintJSON } from './blueprint'
 export {
   BALANCER_LIMIT,
@@ -10,6 +13,7 @@ export { check, Checker, type BlockSignature } from './check'
 export { computeCost, type Cost, type CostEntry } from './cost'
 export { LangError, type Diagnostic, type Loc } from './errors'
 export { Direction, directionName, type Rect, type Vec } from './geometry'
+export { MODULE_NAMES, MODULES, moduleOffering } from './modules'
 export { parse } from './parser'
 export { powerCoverage, type PowerReport } from './power'
 export { ProtoRegistry, type Prototype } from './proto'
@@ -69,8 +73,30 @@ export function compile(source: string, registry: ProtoRegistry): CompileResult 
     throw error
   }
 
-  const checker = new Checker(registry)
-  diagnostics.push(...checker.check(module))
+  // Imports are resolved by putting the library's own statements in front of the program:
+  // everything downstream then sees ordinary blocks, defined before they are used.
+  const imported = new Set<string>()
+  const prelude: Stmt[] = []
+  for (const statement of module.statements) {
+    if (statement.kind !== 'import') continue
+    if (!(statement.name in MODULES)) {
+      diagnostics.push({
+        severity: 'error',
+        message: `there is no library called '${statement.name}'`,
+        loc: statement.loc,
+        hint: `try ${MODULE_NAMES.map((name) => `"${name}"`).join(' or ')}`,
+      })
+      continue
+    }
+    if (imported.has(statement.name)) continue
+    imported.add(statement.name)
+    prelude.push(...moduleStatements(statement.name))
+  }
+
+  const whole = { statements: [...prelude, ...module.statements] }
+
+  const checker = new Checker(registry, imported)
+  diagnostics.push(...checker.check(whole))
   const blocks = [...checker.blocks.values()]
 
   if (diagnostics.some((d) => d.severity === 'error')) {
@@ -78,7 +104,7 @@ export function compile(source: string, registry: ProtoRegistry): CompileResult 
   }
 
   try {
-    const { scene, output } = new Runtime(registry).run(module)
+    const { scene, output } = new Runtime(registry, imported).run(whole)
     diagnostics.push(...scene.diagnostics)
     return { scene, output, diagnostics, ran: true, blocks }
   } catch (error) {

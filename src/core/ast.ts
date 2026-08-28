@@ -14,9 +14,15 @@ export type Expr =
   | { kind: 'number'; value: number; loc: Loc }
   | { kind: 'text'; value: string; loc: Loc }
   | { kind: 'name'; name: string; loc: Loc }
-  | { kind: 'tuple'; items: Expr[]; loc: Loc }
+  /**
+   * `entries` is the same list as written, kept because an item may itself be `name (…)` —
+   * a nested call, not a label. Only whoever knows what is callable can tell them apart.
+   */
+  | { kind: 'tuple'; items: Expr[]; entries?: Arg[]; loc: Loc }
   | { kind: 'binary'; op: string; left: Expr; right: Expr; loc: Loc }
   | { kind: 'unary'; op: string; operand: Expr; loc: Loc }
+  /** `n > 2 ? 3 : 1` — a choice between two values, not two branches of a program. */
+  | { kind: 'ternary'; condition: Expr; then: Expr; otherwise: Expr; loc: Loc }
   | { kind: 'range'; from: Expr; to: Expr; loc: Loc }
   | { kind: 'field'; target: Expr; field: string; loc: Loc }
   | { kind: 'call'; callee: string; args: Arg[]; loc: Loc }
@@ -56,9 +62,13 @@ export type Stmt =
   | { kind: 'defaults'; target?: string; targetLoc?: Loc; args: Arg[]; body?: Stmt[]; loc: Loc }
   | { kind: 'for'; name: string; iterable: Expr; body: Stmt[]; loc: Loc }
   | { kind: 'if'; condition: Expr; then: Stmt[]; else?: Stmt[]; loc: Loc }
+  /** `throw "size must be at least 2"` — the author's own error, raised where it is written. */
+  | { kind: 'throw'; value: Expr; loc: Loc }
+  /** `import "stdlib"` — pulls a library's blocks and helpers into scope. */
+  | { kind: 'import'; name: string; loc: Loc }
   | {
       kind: 'block'
-      form: 'at' | 'row' | 'column'
+      form: 'at' | 'row' | 'column' | 'transform'
       args: Arg[]
       /** `row for i in 0..n => { … }` — one layout item per pass. */
       each?: { name: string; iterable: Expr }
@@ -72,4 +82,4 @@ export interface Module {
 }
 
 /** Statement-level forms that take a `=> { … }` body. */
-export const BLOCK_FORMS = new Set(['at', 'row', 'column'])
+export const BLOCK_FORMS = new Set(['at', 'row', 'column', 'transform'])
