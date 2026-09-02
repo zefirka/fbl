@@ -56,6 +56,14 @@ pumped and therefore free while light oil has to be refined. It is one click to 
 recipe. Doing better means knowing which planet a plan is for — the dataset carries a
 `locations` field for exactly that — and that is a feature, not a tiebreak.
 
+Which item's producer gets turned on is decided by the walk; **how much of it to run is not**.
+Every wanted item gets its chosen producer, even one that something already makes as a
+byproduct, because turning a recipe on is not the same as running it — the solver sets it to
+zero if the byproduct covers the demand, and the nudge against pointless work keeps it there.
+Deciding it in the walk instead means deciding on no evidence: a quantum processor hands back
+five of the ten fluoroketone it took, so *something* makes it and it still needs a source for
+the other half. Eight items were unmakeable on that reasoning.
+
 Which recipes are on the table stays yours. The solver decides how fast, never what with, so
 nothing turns up in a plan because an optimiser found it cheap. Two whole classes are off the
 table before that: recycling and barrelling, because 43 recipes produce an iron plate and 41 of
@@ -65,12 +73,22 @@ into ore in a crate — and those have no machine at all. Left in, they cost not
 and a plan asked for a locomotive answers with six thousand biochambers growing iron out of
 jellynut.
 
-Going short is priced twice over, and the difference matters. Falling short of something in the
-middle of a chain is bad; falling short of what was asked for is giving up. With one price the
-solver would rather abandon the locomotive than admit to seventeen asteroid chunks it cannot
-get — the arithmetic is right and the answer is useless, because a plan that shows nothing says
-nothing about what is missing. Priced apart, it builds everything it can and names the one
-thing it could not.
+Going short is settled **before** anything is costed, in a pass of its own: minimise what the
+plan cannot make, weighing a target far above an intermediate, and only then minimise the cost
+of what is left with that shortfall held where the first pass put it.
+
+The order matters, and the weighting within the first pass matters. Falling short of something
+in the middle of a chain is bad; falling short of what was asked for is giving up — with those
+weighed the same, the solver abandons one locomotive rather than admit to seventeen asteroid
+chunks it cannot get, which is arithmetically right and useless, because a plan that shows
+nothing says nothing about what is missing.
+
+It used to be one pass with a large price on going short, and that quietly broke on anything
+expensive. The dataset prices ore at a hundred a unit, so a processing unit runs to about ten
+thousand and a personal battery MK2 takes fifteen of them — past any constant, at which point
+the solver would rather declare the thing unmakeable than pay for it. **Seventeen perfectly
+ordinary items were unmakeable that way**, uranium among them. No price can be picked large
+enough to be safe, so nothing is priced against anything of a different kind.
 
 Every setting sits on the node it changes — which machine runs a recipe, what is in its module
 slots, how many beacons reach it, and which recipe makes a thing where there is a choice.
@@ -138,6 +156,16 @@ picker and the module picker each carry a row of tiers, and what you pick is sta
 icon the way the game stamps it. A legendary electric furnace smelts at 5 rather than 2, so the
 count on the card drops as you click. Quality on the *products* is a different question — a
 plan for legendary circuits is a plan with a quality chain in it — and this does not answer it.
+
+## Checking that all of it works
+
+`npm run audit` walks every craftable item in every dataset and asks for one a second of each:
+293 items in Space Age 2.1, 198 in 1.1. It reports two kinds of failure and they mean different
+things — a recipe *dropped* by our own filters, which is always a bug, and a plan that cannot be
+solved, which sometimes is not: you cannot make an asteroid chunk on the ground, and the script
+says so rather than counting it against us.
+
+A test runs the same audit over all four versions, so none of it can rot quietly.
 
 ## Getting around it
 

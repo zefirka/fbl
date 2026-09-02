@@ -62,6 +62,12 @@ the same kind of noise: it moves a fluid, it does not produce one.
 Both are filtered out in `recipeGraph`, and nothing that reaches the solver can be reached
 through either.
 
+Be exact about what barrelling *is*, though. It is a **filled** barrel on one side of the
+recipe: filling makes one, emptying takes one apart. An empty barrel is an ordinary item —
+steel makes it, and cliff explosives are packed into one — so a recipe that merely uses one is
+not barrelling. Reading the rule as "anything that mentions a barrel" took out cliff explosives
+and the barrel's own recipe with it, and cliff explosives simply could not be made.
+
 ### Some recipes have no machine at all
 
 Space Age carries recipes for what happens **on its own**: food spoiling, bacteria multiplying
@@ -111,6 +117,18 @@ rather than looking like a cheap way to make petroleum.
 is pumped and therefore free while light oil has to be refined. It is one click to the
 light-oil recipe. Doing better means knowing which planet a plan is for — `recipe.locations`
 is right there for it — and that is a feature, not a tiebreak.
+
+### Some things cannot be started
+
+A recipe that needs the thing it makes cannot be how you first get one. Where *every* way of
+producing an item is like that, the item has no starting point and a plan has to begin with it
+in hand — a pentapod egg is grown from a pentapod egg, and raw fish are bred from fish. Those
+are treated as things you begin with rather than things a plan can conjure.
+
+Asteroid chunks are the same shape of problem one step out: each kind is reprocessed from
+another kind, so no single recipe consumes what it makes, and the whole trio has no entrance.
+What scoops the first one is a collector in space, which is not a recipe anybody can build, so
+a plan for one on the ground correctly reports that it is short.
 
 ## Entity geometry
 

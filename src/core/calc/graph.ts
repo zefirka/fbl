@@ -21,10 +21,17 @@ import type { ProtoRegistry } from '../proto'
 /** Recipes that give an item back rather than making it, and research, which makes nothing. */
 const IGNORED_FLAGS = new Set(['recycling', 'technology', 'burn'])
 
-/** Filling and emptying barrels moves a fluid around; it does not produce one. */
+/**
+ * Filling and emptying barrels moves a fluid around; it does not produce one.
+ *
+ * What makes a recipe barrelling is a *filled* barrel on one side of it: filling makes one,
+ * emptying takes one apart. An empty barrel is an ordinary item — steel makes it, and cliff
+ * explosives are packed into one — so a recipe that merely uses one is not barrelling, and
+ * throwing it out is how cliff explosives stopped being makeable at all.
+ */
 const isBarrelling = (recipe: LabRecipe) =>
-  [...Object.keys(recipe.in ?? {}), ...Object.keys(recipe.out ?? {})].some(
-    (item) => item === 'barrel' || item.endsWith('-barrel'),
+  [...Object.keys(recipe.in ?? {}), ...Object.keys(recipe.out ?? {})].some((item) =>
+    item.endsWith('-barrel'),
   )
 
 export interface RecipeGraph {
@@ -104,6 +111,14 @@ export function recipeGraph(registry: ProtoRegistry): RecipeGraph {
       if (list) list.push(recipe.id)
       else producers.set(item, [recipe.id])
     }
+  }
+
+  // A recipe that needs the thing it makes cannot be how you first get one. Where every way
+  // of producing an item is like that, the item has no starting point at all and a plan has to
+  // begin with it in hand: an asteroid chunk is reprocessed into a chunk, and the collector
+  // that scoops the first one is not a recipe anybody can build.
+  for (const [item, list] of producers) {
+    if (list.every((id) => (usable.get(id)?.in ?? {})[item] !== undefined)) mapped.add(item)
   }
 
   // A solid you dig is raw and that is the end of it. A fluid you dig is raw only where

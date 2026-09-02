@@ -415,3 +415,44 @@ test('a link that has been mangled is refused rather than half-read', () => {
   const good = encodePlan({ version: '2x1', belt: 'transport-belt', targets: [{ item: 'coal', rate: 1 }], choice: {}, extra: {}, frontier: {}, nodes: {} })
   assert.equal(decodePlan(good.slice(0, good.length - 4)), undefined)
 })
+
+test('an empty barrel is an ordinary item, and things are packed into it', () => {
+  // Barrelling is a *filled* barrel on one side: filling makes one, emptying takes one apart.
+  // An empty barrel is made of steel and cliff explosives are packed into one, so a recipe
+  // that merely uses one is not barrelling — throwing it out made cliff explosives unmakeable.
+  assert.equal(graph.usable.has('cliff-explosives'), true)
+  assert.deepEqual(graph.producers.get('barrel'), ['barrel'])
+  assert.ok((graph.usable.get('cliff-explosives')?.in ?? {}).barrel > 0, 'it really does take one')
+
+  const solution = plan({ targets: [{ item: 'cliff-explosives', rate: 1 }] })
+  assert.equal(solution.status, 'optimal')
+  assert.ok(solution.nodes.some((node) => node.recipe === 'cliff-explosives'))
+  assert.ok(solution.nodes.some((node) => node.recipe === 'barrel'), 'and the barrels are counted')
+  assert.equal(solution.shortfalls.length, 0)
+
+  // Filling and emptying are still out: nothing gets its petroleum by unpacking a barrel.
+  for (const item of ['petroleum-gas', 'light-oil', 'water']) {
+    assert.ok(!(graph.producers.get(item) ?? []).some((id) => id.includes('barrel')), item)
+  }
+})
+
+test('every craftable item in every version can actually be planned', async () => {
+  // The check that would have caught cliff explosives, the seventeen items too expensive to
+  // be worth making, and the eight caught in a coolant loop. It walks what the raw data says
+  // a factory can build — every recipe that is not research, not recycling, not barrelling,
+  // and has a machine to run it — and asks for one a second of each.
+  const { audit, unexplained } = await import('../scripts/audit-recipes.mjs')
+
+  for (const version of ['2x1', 'spa', '2.0', '1.1']) {
+    const report = await audit(version)
+    assert.ok(report.count > 150, `${version} should have plenty to check`)
+
+    assert.deepEqual(report.dropped, [], `${version}: the data says these are makeable and the graph disagrees`)
+    assert.deepEqual(report.failed, [], `${version}: these failed to solve at all`)
+    assert.deepEqual(
+      unexplained(report).map((entry) => `${entry.item} needs ${entry.missing.join(', ')}`),
+      [],
+      `${version}: short of something the ground should supply`,
+    )
+  }
+})

@@ -116,17 +116,13 @@ const WORK_PRICE = 1e-2
 const WASTE_PRICE = 1e-1
 
 /**
- * What going short is worth avoiding.
+ * How much worse it is to fall short of what was asked for than of something in the middle.
  *
- * Two prices, not one, and the difference matters. Falling short of something in the middle of
- * a chain is bad; falling short of what was asked for is giving up. With a single price the
- * solver would rather abandon one locomotive than admit to seventeen asteroid chunks it cannot
- * get — the arithmetic is right and the answer is useless, because a plan that shows nothing
- * says nothing about what is missing. Priced apart, it builds everything it can and names the
- * one thing it could not.
+ * Falling short of an intermediate is bad; falling short of the target is giving up. Only the
+ * ratio matters, because going short is settled on its own before anything is costed — see
+ * below.
  */
-const SHORTFALL_PRICE = 1e5
-const TARGET_SHORTFALL = 1e8
+const TARGET_WEIGHT = 1000
 
 export function solve(registry: ProtoRegistry, config: CalcConfig): Solution {
   const graph = recipeGraph(registry)
@@ -203,7 +199,16 @@ export function solve(registry: ProtoRegistry, config: CalcConfig): Solution {
     return true
   }
 
-  /** Walks what the enabled recipes need until nothing new turns up. */
+  /**
+   * Walks what the enabled recipes need until nothing new turns up.
+   *
+   * Every wanted item gets its chosen producer, even one something already makes as a
+   * byproduct. Turning a recipe on is not the same as running it — the solver sets it to zero
+   * if the byproduct covers the demand, and the nudge against pointless work keeps it there.
+   * Deciding here instead would mean deciding on no evidence: a quantum processor hands back
+   * five of the ten fluoroketone it took, so *something* makes it and it still needs a source
+   * for the other half. Skipping one on that reasoning left eight items unmakeable.
+   */
   const spread = (): void => {
     for (let sweep = 0; sweep < 64; sweep++) {
       const wanted = new Set<string>()
@@ -213,9 +218,7 @@ export function solve(registry: ProtoRegistry, config: CalcConfig): Solution {
 
       let grew = false
       for (const item of wanted) {
-        // Something enabled already makes it: a refinery's own heavy oil needs no second
-        // source, and looking one up is how a plan grows a coal mine it never asked for.
-        if (stops(item) || makes.has(item)) continue
+        if (stops(item)) continue
         if (enable(chosen(item))) grew = true
       }
       if (!grew) return
@@ -287,7 +290,6 @@ export function solve(registry: ProtoRegistry, config: CalcConfig): Solution {
     A[row][surplusAt(row)] = -1
     c[surplusAt(row)] = WASTE_PRICE
     A[row][shortAt(row)] = 1
-    c[shortAt(row)] = targeted.has(item) ? TARGET_SHORTFALL : SHORTFALL_PRICE
   }
   for (const target of config.targets) b[rowOf.get(target.item)!] += target.rate
 
@@ -298,7 +300,41 @@ export function solve(registry: ProtoRegistry, config: CalcConfig): Solution {
     b[row] = (config.nodes[id]?.pin ?? 0) * (plan.get(id)?.perMachine ?? 0)
   }
 
-  const answer = minimise(A, b, c)
+  /**
+   * Two passes, and the order is the point.
+   *
+   * Going short is settled first, on its own: minimise what the plan cannot make, weighing a
+   * target far above an intermediate. Only then is the cost of what is left minimised, with
+   * that shortfall held at what the first pass found.
+   *
+   * It was one pass and a big number for the shortfall, and that quietly broke on anything
+   * expensive. The dataset prices ore at a hundred a unit, so a processing unit runs to about
+   * ten thousand and a battery MK2 takes fifteen of them — past any constant, at which point
+   * the solver would rather declare the thing unmakeable than pay for it. Seventeen items were
+   * unmakeable that way, all of them perfectly ordinary. A price cannot be picked large enough
+   * to be safe, so nothing is priced against anything of a different kind.
+   */
+  const shortfallCost = new Array(columns).fill(0)
+  for (const [row, item] of items.entries()) {
+    shortfallCost[shortAt(row)] = targeted.has(item) ? TARGET_WEIGHT : 1
+  }
+
+  const first = minimise(A, b, shortfallCost)
+  let answer = first
+
+  if (first.status === 'optimal') {
+    const unmet = first.x.reduce((sum, value, column) => sum + value * shortfallCost[column], 0)
+
+    // Held with a hair of slack rather than pinned exactly: the bound comes out of a floating
+    // point sum, and demanding it to the last bit can make the second pass infeasible. The
+    // hair is relative and tiny — a slack of any size is a shortfall the second pass is
+    // allowed to help itself to, and it comes straight out of the answer.
+    const held = A.map((row) => [...row, 0])
+    held.push([...shortfallCost, 1])
+    const slack = Math.max(1e-9, unmet * 1e-9)
+    const second = minimise(held, [...b, unmet + slack], [...c, 0])
+    if (second.status === 'optimal') answer = second
+  }
 
   for (const [column, id] of enabled.entries()) {
     const node = plan.get(id)!
