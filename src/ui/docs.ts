@@ -135,6 +135,37 @@ whole block. And because an unlabelled coordinate always means position, <code>c
 fills <code>at</code>, never a parameter that happens to be a <code>coord</code>. Label it —
 <code>cell (origin (4, 0))</code> — if a block really does take a second coordinate.</p>
 
+<h2>Records</h2>
+<p>A parameter that has to say more than one thing about each of several things wants a record:
+a named bag of fields, written like a block header with no body.</p>
+${code(`
+defrecord line (direction dir = east, item[] content = ())
+
+defblock through (line[] lines = 1, int n = 4) => {
+  for l, j in lines => { belt (from (0, j) to (n * 4, j), content l.content) }
+}
+`)}
+<p>Fields are filled exactly the way arguments are — by label, or bare when the type says which
+field it could only be — so a misspelt field reads like a misspelt slot, and everything that
+knows how to fill a slot already knows how to fill a field. Read them back with <code>.</code>,
+and pick one out of a list with <code>[i]</code>:</p>
+${code(`
+through (lines ((dir west, content (coal)), (dir east)))   ; two lines, written out
+through (lines (dir west))                                 ; one
+through (lines 3)                                          ; three, all at their defaults
+`)}
+<p>That last spelling is why a record does not need a union type beside it. <b>A count is that
+many at their defaults</b>, which is what someone means by <code>lines 3</code>, and it only
+holds when every field has a default — otherwise the count would be inventing values you never
+gave. The body sees a list either way and never has to ask which spelling it got.</p>
+<p>Entries that are each a group of their own are the elements of a list; anything else is one
+record written out. The difference is visible in the source rather than inferred from the
+fields, so <code>(dir west)</code> is one line and <code>((dir west), (dir east))</code> is two.</p>
+<p>Two places a literal cannot go, because brackets there are arithmetic rather than a list: a
+<code>def</code>, and a default. A default takes <code>()</code>, which means the record at its
+own defaults — <code>defrecord frame (line edge = ())</code> — and a variable takes one by
+holding what something else built.</p>
+
 <h2>Loops and layout</h2>
 <p class="callout"><b><code>for</code> repeats; it does not position.</b> Eight calls to
 <code>cell ()</code> with no <code>at</code> land eight cells on the same tile. Either compute
@@ -148,6 +179,11 @@ row for i in 0..8 => { cell (recipe iron-gear-wheel) }
 
 ; the same thing, spelled out
 row => { for i in 0..8 => { cell (recipe iron-gear-wheel) } }
+`)}
+<p>A loop over a list can take a second name, which counts the passes — the row to place this
+one on is the usual reason to want it:</p>
+${code(`
+for l, i in lines => { belt (from (0, i) to (10, i), content l.content) }
 `)}
 <p>Layout forms exist because the width of a block is not known in advance: it depends on the
 recipe, the modules, the belt tier. <code>row</code> and <code>column</code> evaluate a child,
@@ -222,6 +258,11 @@ an oil refinery — is moved and turned correctly, but 2.0 stores its internal m
 separate flag on the entity, and that flag is not written yet.</p>
 
 <h2>Labels and arithmetic</h2>
+<p>The editor paints slot names apart from everything else, because a name and its value sit
+side by side with nothing but a space between them: <code>recipe iron-gear-wheel</code> is one
+label and one value, and until they are told apart the line has to be parsed by eye. The colour
+comes from the syntax tree rather than a list, so a block's own parameters light up like the
+built-in slots — at the call and at the definition both.</p>
 <p>A slot is written <code>name value</code>, which leaves one place where an argument could be
 read two ways: <code>at (0, lines - j)</code> might be a subtraction, or the label
 <code>lines</code> with the value <code>-j</code>. Minus is the only operator that can also
@@ -270,12 +311,24 @@ belt (from (0, 0) to (10, 0), blue, auto)   ; tunnels beneath the machine
 `)}
 <p>Obstacles standing a single tile apart share one longer tunnel. That lone tile has nowhere
 to surface: it would have to be the exit of one pair and the entry of the next at the same
-time, so the belt stays under it and comes up past the far obstacle. If the tier cannot reach
-that far it is an error naming one that can, rather than a belt quietly laid over a machine.</p>
+time, so the belt stays under it and comes up past the far obstacle.</p>
+<p>Runs are routed in two passes. The first goes in source order, each yielding to the ones
+above it — the tie-break when two want the same tile. Whatever could not be routed that way is
+tried again with the whole blueprint in view, because a lane is often finished by a run written
+further down. Ground an underground of the same line already runs beneath counts as carried, so
+a belt over it is the same lane arriving twice rather than a second one.</p>
+<p>When a run cannot be routed even then — nowhere to dive from, a corner where it has to
+tunnel, a span past the tier's reach — it is <b>laid flat and reported as a warning</b> rather
+than thrown away. An error would take the whole blueprint with it and leave an empty preview, which
+is the worst moment to have nothing to look at. Laid flat, the belt clashes exactly where the
+trouble is and the preview marks it red. What could still be merged is merged even then: a
+stretch shared with a line already going that way was never a conflict.</p>
 <p>Not everything on the path is an obstacle. A splitter, belt or tunnel <b>already running
 the way this belt is heading</b> is the same line: the belt joins it and comes out the far
 side. So a splitter drops into a run without the belt diving around it, and two runs along one
-line merge instead of colliding:</p>
+line merge instead of colliding. Because it is the same line, a plain belt already on the path
+can also <i>become</i> a tunnel end — otherwise a lane that already carries a belt would have
+nowhere to dive from at all. A splitter cannot: it is a thing in its own right.</p>
 ${code(`
 express-splitter (at (7, 0), east)
 belt (from (0, 0) to (14, 0), auto)     ; feeds the splitter, carries on past it
@@ -414,6 +467,49 @@ ${['assembling-machine-3', 'bulk-inserter', 'splitter', 'steel-chest']
   })
   .join('')}
 
+<h2>Calculator</h2>
+<p>A separate page, linked from the toolbar: you say what you want a second, it works out every
+recipe behind it and draws the chain left to right, with each ribbon as thick as the flow is
+wide. Nothing about it touches your schema — it is a plan, not a blueprint, and the two are
+kept apart on purpose.</p>
+<p>What makes it more than division is that recipes are not a tree. A refinery makes three
+things at once and cracking turns two of them back into the third, so the whole plan is put to
+a linear programme rather than walked down: one variable per recipe, one row per item, and the
+answer minimised against what it draws out of the ground. Which recipes are on the table stays
+yours — the solver decides how fast, never what with.</p>
+<p>Ore is taken from the bus by default — a plan starts from a belt of it — but digging is a
+recipe like any other, so the drills are a click away on the ore's own node, all three of them.
+Every node has the switch the other way round too: <b>take from the bus</b> drops it and
+everything that was only there to feed it, when what is behind a thing is somebody else's
+problem and all you want is the number.</p>
+<p>Every setting sits on the node it changes: the machine running a recipe, what is in it, how
+many beacons reach it, and which recipe makes a thing where there is a choice. Tell it you
+already have twelve of something and it plans around them and says what it is then short of.
+A byproduct nobody wants shows up as its own box asking what you would like done with it.</p>
+<p>The plan lives in the address bar and is rewritten on every change, so the link in front of
+you is always the plan in front of you — <b>copy link</b> puts it on the clipboard. It rides in
+the fragment, which never leaves the browser, and following someone's link shows their plan
+without losing yours.</p>
+<p>Every ribbon is labelled with what it carries and how fast, and where a node feeds more than
+one place, with how many of its machines that branch is worth — four of the five cable
+assemblers for the green circuits, one for the red.</p>
+<p>Every flow leaves and arrives through a coloured tab on the edge of a card — outputs on the
+right, inputs on the left — so a ribbon ends on something rather than near it, and what an item
+is stays the same colour everywhere it goes.</p>
+<p>Choices are made by looking rather than by reading: every one of them opens a grid of icons
+grouped the way the game groups them, with the name and the numbers that decide it — speed,
+module slots, what a recipe takes and gives — under the cursor. Where the version has quality,
+the tier is picked in the same panel and stamped on the icon, so a legendary machine looks like
+one.</p>
+
+<h2>Keeping your own schemas</h2>
+<p>The menu behind the burger holds the examples and whatever you have saved. Type a name and
+press <b>save</b> to keep the buffer under it; saving again under the same name replaces it
+rather than growing a second copy. The × beside a schema forgets it.</p>
+<p>Everything lives in this browser and goes nowhere else — the studio has no server to send it
+to. That also means clearing site data clears your schemas, so anything you want to keep for
+good belongs in a file of your own.</p>
+
 <h2>Preview</h2>
 <p>The <b>sprites</b> view draws the game's own art in the game's render order. Two things it
 adds on top, because a sprite cannot show them: a machine's recipe floats over its centre, and
@@ -425,6 +521,10 @@ exit is drawn rotated 180°, so the pair reads as two ramps facing each other.</
 <p>A belt tile only knows which way it faces; whether it is drawn straight or bent comes from
 its neighbours, exactly as the game derives it. So <code>via</code> corners need no special
 syntax — place the path and the bends appear.</p>
+<p>Hold <b>Alt</b> and the preview turns into a ruler: the tile under the cursor lights up and
+says what to type, negative numbers and all. Reading a coordinate off the picture and writing it
+into the source is most of what moving something means, and counting grid squares is a poor way
+to do it. The tooltip stands aside while the ruler is up.</p>
 <p>The <b>schematic</b> view replaces the art with colour-coded footprints and direction
 chevrons. Easier to read alignment from, and the only view available without a local Factorio
 installation.</p>
@@ -480,6 +580,25 @@ raw resources and other materials. Both halves matter: a foundry casts turbo bel
 out of gears and plates, so a belt is not a material. What survives is the tier you would
 actually shop for — plates, steel, plastic, lubricant, tungsten plate — instead of the ore,
 lava and fruit underneath them.</p>
+
+<h2>Rates</h2>
+<p>The panel above it answers the other question: not what the blueprint costs to build, but
+what it costs to run. <b>consumption</b> is what the machines draw in with every one of them
+crafting without pause, <b>production</b> is what comes out the far side. A machine gets through
+<code>speed × (1 + speed bonus) ÷ recipe time</code> crafts a second; ingredients go in once per
+craft and products come out multiplied by productivity, which is why speed modules move both
+columns and productivity modules move only the second.</p>
+<p>Everything that moves those numbers is read off the entity: the recipe, the modules in it and
+the quality of each of them, the quality of the machine itself, and whatever the machine does for
+nothing — a foundry casts half again as much as the recipe says. Beacons count as well, and where
+they stand decides what they do: a beacon reaches every machine its area touches and hands over
+its effectivity share of what is in it, keeping less of that share the more beacons crowd the same
+machine. Productivity is the one thing a beacon cannot transmit, and a recipe that refuses
+productivity turns it off everywhere.</p>
+<p>Nothing here models throughput: whether the belts keep up with the answer is the question the
+panel is there to help with, not one it answers. And a machine with no recipe is counted under the
+list rather than folded into the total as a zero — a furnace has no recipe to set at all, so what
+comes out of one is yours to say.</p>
 
 <h2>What the checker catches</h2>
 <p>Parse → check → run. The checker is a gate: if it reports an error nothing is placed, so a

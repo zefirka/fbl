@@ -46,6 +46,7 @@ export function createEditor(container: HTMLElement, source: string, host: Langu
     suggestOnTriggerCharacters: true,
     wordBasedSuggestions: 'off',
     bracketPairColorization: { enabled: false },
+    'semanticHighlighting.enabled': true,
     overviewRulerLanes: 0,
     guides: { indentation: false },
     // The examples use × and → in comments; Monaco's default is to flag them as confusable.

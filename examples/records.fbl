@@ -1,0 +1,38 @@
+; ─────────────────────────────────────────────────────────────────────────────
+; Records. One parameter that has to say several things about each of several
+; things wants a shape of its own: a named bag of fields, written like a block
+; header with no body.
+; ─────────────────────────────────────────────────────────────────────────────
+
+defaults (tier blue)
+
+; Every field has a default, which is what lets a caller say how many lanes it
+; wants instead of writing each one out.
+defrecord lane (direction dir = east, item[] content = ())
+
+; Machines in a row, with one belt per lane running underneath them.
+defblock feed (entity machine = assembling-machine-3, recipe r, int n = 3, lane[] lanes = 1) => {
+  def h = height (machine)
+  def w = width (machine)
+  def span = (w + 1) * n - 1
+
+  row (gap 1) for i in 0..n => { machine (recipe r) }
+
+  ; `for l, i in lanes` hands over the lane and which pass it is, and the pass
+  ; is the row to put it on. A lane running west starts at the far end.
+  for l, i in lanes => {
+    def y = h + i
+    belt (from (l.dir == east ? 0 : span, y) to (l.dir == east ? span : 0, y), content l.content)
+  }
+}
+
+; Written out: entries that are each a group of their own are the elements of
+; the list, so this is two lanes rather than one lane with two fields.
+feed (at (0, 0), r iron-gear-wheel, n 4,
+      lanes ((content (iron-plate)), (dir west, content (iron-gear-wheel))))
+
+; A count is the same thing said shorter: two lanes, both at their defaults.
+feed (at (0, 7), r copper-cable, n 3, lanes 2)
+
+; One lane, and a field bare where its type can only mean one thing.
+feed (at (0, 14), r electronic-circuit, n 2, lanes (west))

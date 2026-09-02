@@ -8,12 +8,10 @@
   <body>
     <div id="app">
       <header class="toolbar">
+        <button id="menu" type="button" class="burger" aria-label="menu" aria-expanded="false">
+          <span></span><span></span><span></span>
+        </button>
         <span class="brand">fbl<span class="brand-dim">/studio</span></span>
-
-        <label class="field">
-          <span>example</span>
-          <select id="example"></select>
-        </label>
 
         <label class="field">
           <span>version</span>
@@ -27,6 +25,7 @@
           <button type="button" data-mode="sprites" class="active">sprites</button>
           <button type="button" data-mode="schematic">schematic</button>
         </div>
+        <a class="ghost" href="./calc.html" title="Work out what a factory has to run at">calculator</a>
         <button id="power" type="button" class="ghost" title="Show what the poles reach (P)">power</button>
         <button id="fit" type="button" class="ghost" title="Fit to view (F)">fit</button>
         <button id="copy" type="button" class="primary">copy blueprint</button>
@@ -44,7 +43,10 @@
           <div class="tab-body" id="tab-blueprint">
             <canvas id="canvas"></canvas>
             <div id="tooltip" class="tooltip" hidden></div>
-            <aside id="cost" class="cost" hidden></aside>
+            <div class="panels">
+              <aside id="cost" class="panel" hidden></aside>
+              <aside id="rates" class="panel" hidden></aside>
+            </div>
             <div id="loading" class="loading">loading game data…</div>
             <div id="preload" class="preload" hidden></div>
           </div>
@@ -54,6 +56,9 @@
       </main>
 
       <footer id="console" class="console"></footer>
+
+      <div id="scrim" class="scrim" hidden></div>
+      <aside id="drawer" class="drawer" hidden></aside>
     </div>
     <script type="module" src="/src/ui/main.ts"></script>
   </body>

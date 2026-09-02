@@ -102,8 +102,8 @@ export class Scene {
     return entity
   }
 
-  warn(message: string, loc?: Loc): void {
-    this.diagnostics.push({ severity: 'warning', message, loc })
+  warn(message: string, loc?: Loc, hint?: string): void {
+    this.diagnostics.push({ severity: 'warning', message, loc, hint })
   }
 
   /** Bounding box over a half-open index range, in tiles. */

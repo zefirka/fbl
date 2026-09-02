@@ -16,6 +16,7 @@ import {
   findSlot,
   HELPER_SLOTS,
   LAYOUT_SLOTS,
+  recordSlots,
   type SlotDef,
 } from './slots'
 import { closestNames } from './suggest'
@@ -24,6 +25,14 @@ import { assignable, namedType, showType, SIDES, T, Universe, type Type } from '
 export interface BlockSignature {
   name: string
   params: Param[]
+  slots: SlotDef[]
+  loc: Loc
+}
+
+/** A `defrecord` shape: its fields as parameters, and the same fields as fillable slots. */
+export interface RecordSignature {
+  name: string
+  fields: Param[]
   slots: SlotDef[]
   loc: Loc
 }
@@ -46,6 +55,15 @@ const HANDLE_FIELDS: Record<string, Type> = {
   to: T.coord,
   name: T.text,
   dir: T.enum('direction'),
+}
+
+/**
+ * `mods (repeat (4, x))` is a list holding a list: after a label, brackets make a list rather
+ * than group, so the ones that were meant as grouping have to come off.
+ */
+function groupingHint(actual: Type, expected: Type): string | undefined {
+  if (expected.k !== 'array' || actual.k !== 'tuple' || actual.items.length !== 1) return undefined
+  return assignable(actual.items[0], expected) ? 'drop the outer brackets — they make a list of one' : undefined
 }
 
 class Scope {
@@ -74,6 +92,7 @@ type Callee =
 export class Checker {
   readonly diagnostics: Diagnostic[] = []
   readonly blocks = new Map<string, BlockSignature>()
+  readonly records = new Map<string, RecordSignature>()
   private readonly universe: Universe
 
   /** Native helpers the imported libraries unlock. */
@@ -103,8 +122,28 @@ export class Checker {
     return this.diagnostics
   }
 
-  /** Blocks are visible to each other regardless of order. */
+  /** Blocks and records are visible to each other regardless of order. */
   private hoist(statements: Stmt[]): void {
+    // Records first: a block's parameters are typed against them.
+    for (const statement of statements) {
+      if (statement.kind !== 'defrecord') continue
+      if (this.records.has(statement.name)) {
+        this.error(`record '${statement.name}' is defined twice`, statement.loc)
+        continue
+      }
+      this.records.set(statement.name, {
+        name: statement.name,
+        fields: statement.fields,
+        slots: [],
+        loc: statement.loc,
+      })
+    }
+    // Their slots are built in a second pass, so one record may hold another.
+    for (const record of this.records.values()) {
+      record.slots = this.fieldSlots(record.fields)
+    }
+    for (const record of this.records.values()) this.checkNotCircular(record)
+
     for (const statement of statements) {
       if (statement.kind !== 'defblock') continue
       if (this.blocks.has(statement.name)) {
@@ -120,23 +159,46 @@ export class Checker {
     }
   }
 
+  /** A record cannot hold itself, however far around: there would be no first one to build. */
+  private checkNotCircular(record: RecordSignature): void {
+    const seen = new Set<string>()
+    const holds = (name: string): boolean => {
+      if (name === record.name && seen.size > 0) return true
+      if (seen.has(name)) return false
+      seen.add(name)
+      const held = this.records.get(name)
+      return (held?.fields ?? []).some((field) => this.records.has(field.type.name) && holds(field.type.name))
+    }
+
+    if (holds(record.name)) {
+      this.error(`record '${record.name}' contains itself`, record.loc, 'a record cannot hold one of its own kind')
+    }
+  }
+
+  private declared(params: Param[]) {
+    return params.map((p) => ({
+      name: p.name,
+      typeName: p.type.name,
+      array: p.type.array,
+      required: p.default === undefined,
+    }))
+  }
+
+  private baseType = (name: string, array: boolean): Type => {
+    const base = this.records.has(name) ? T.record(name) : (namedType(name) ?? T.any)
+    return array ? T.array(base) : base
+  }
+
   private blockSlots(params: Param[]): SlotDef[] {
-    return blockSlots(
-      params.map((p) => ({
-        name: p.name,
-        typeName: p.type.name,
-        array: p.type.array,
-        required: p.default === undefined,
-      })),
-      (name, array) => {
-        const base = namedType(name) ?? T.any
-        return array ? T.array(base) : base
-      },
-    )
+    return blockSlots(this.declared(params), this.baseType)
+  }
+
+  private fieldSlots(fields: Param[]): SlotDef[] {
+    return recordSlots(this.declared(fields), this.baseType)
   }
 
   private resolveType(expr: TypeExpr): Type {
-    const base = namedType(expr.name)
+    const base = this.records.has(expr.name) ? T.record(expr.name) : namedType(expr.name)
     if (!base) {
       this.error(`unknown type '${expr.name}'`, expr.loc, this.suggestType(expr.name))
       return T.any
@@ -145,7 +207,8 @@ export class Checker {
   }
 
   private suggestType(name: string): string | undefined {
-    const near = closestNames(name, ['int', 'float', 'bool', 'text', 'coord', 'direction', 'tier', 'quality', 'recipe', 'item', 'module', 'handle'], 1)
+    const known = ['int', 'float', 'bool', 'text', 'coord', 'direction', 'tier', 'quality', 'recipe', 'item', 'module', 'handle', ...this.records.keys()]
+    const near = closestNames(name, known, 1)
     return near.length ? `did you mean '${near[0]}'?` : undefined
   }
 
@@ -175,6 +238,21 @@ export class Checker {
           inner.set(param.name, type)
         }
         this.checkStatements(statement.body, inner)
+        return
+      }
+
+      case 'defrecord': {
+        for (const field of statement.fields) {
+          const type = this.resolveType(field.type)
+          if (!field.default) continue
+          const actual = this.typeOf(field.default, scope, type)
+          if (!assignable(actual, type)) {
+            this.error(
+              `default for '${field.name}' is ${showType(actual)}, not ${showType(type)}`,
+              field.default.loc,
+            )
+          }
+        }
         return
       }
 
@@ -214,6 +292,7 @@ export class Checker {
         }
         const inner = scope.child()
         inner.set(statement.name, element)
+        if (statement.indexName) inner.set(statement.indexName, T.int)
         this.checkStatements(statement.body, inner)
         return
       }
@@ -243,6 +322,7 @@ export class Checker {
             )
           }
           inner.set(statement.each.name, element)
+          if (statement.each.indexName) inner.set(statement.each.indexName, T.int)
         }
         this.checkStatements(statement.body, inner)
         return
@@ -433,9 +513,17 @@ export class Checker {
         this.warn(`'${slot.name}' is given twice; the last one wins`, form.loc)
       }
 
+      // A record is filled the way a call is, so its fields are checked as arguments rather
+      // than typed as a tuple, which would have lost the labels.
+      if (this.recordFor(slot.type)) {
+        this.checkRecordArg(arg, form.expr, slot.type, scope, slot.name)
+        filled.set(slot.name, form.expr)
+        continue
+      }
+
       // Metadata and filters carry their own shape, which a plain type check cannot see.
       if (slot.type.k === 'content' || slot.type.k === 'filters') {
-        if (slot.type.k === 'content') this.checkContent(arg, calleeName)
+        if (slot.type.k === 'content') this.checkContent(arg, calleeName, scope)
         else this.checkFilters(arg)
         filled.set(slot.name, form.expr)
         continue
@@ -456,7 +544,11 @@ export class Checker {
 
       const actual = this.typeOf(form.expr, scope, slot.type)
       if (!assignable(actual, slot.type)) {
-        this.error(`${slot.name} expects ${showType(slot.type)}, got ${showType(actual)}`, form.expr.loc)
+        this.error(
+          `${slot.name} expects ${showType(slot.type)}, got ${showType(actual)}`,
+          form.expr.loc,
+          groupingHint(actual, slot.type),
+        )
       }
       filled.set(slot.name, form.expr)
     }
@@ -481,6 +573,56 @@ export class Checker {
     return `${slot.name} takes ${showType(slot.type)}`
   }
 
+  /** The record a slot holds, whether it takes one or a list of them. */
+  private recordFor(type: Type): RecordSignature | undefined {
+    const of = type.k === 'array' ? type.of : type
+    return of.k === 'record' ? this.records.get(of.name) : undefined
+  }
+
+  /**
+   * Entries that are each a group of their own are the elements of a list; anything else is
+   * one record written out. `lines ((dir west), (dir east))` is two lines, `lines (dir west)`
+   * is one, and the difference is visible in the source rather than inferred from the fields.
+   */
+  private static isRecordList(entries: Arg[]): boolean {
+    return entries.length > 0 && entries.every((e) => e.label === undefined && e.entries !== undefined)
+  }
+
+  private checkRecordArg(arg: Arg, expr: Expr, type: Type, scope: Scope, slotName: string): void {
+    const record = this.recordFor(type)
+    if (!record) return
+    const list = type.k === 'array'
+
+    // Not written out as fields: a variable holding one, or a count standing for that many.
+    if (!arg.entries) {
+      const actual = this.typeOf(expr, scope, type)
+      if (list && actual.k === 'int') {
+        const missing = record.fields.filter((field) => field.default === undefined)
+        if (missing.length > 0) {
+          this.error(
+            `a count only says how many, and '${record.name}' has a field with no default`,
+            expr.loc,
+            `give '${missing[0].name}' a default, or write ${slotName} out in full`,
+          )
+        }
+        return
+      }
+      if (!assignable(actual, type)) {
+        this.error(`${slotName} expects ${showType(type)}, got ${showType(actual)}`, expr.loc)
+      }
+      return
+    }
+
+    if (list && arg.entries.length === 0) return
+    if (list && Checker.isRecordList(arg.entries)) {
+      for (const entry of arg.entries) {
+        this.checkSlotArgs(entry.entries ?? [], record.slots, record.name, scope, entry.loc)
+      }
+      return
+    }
+    this.checkSlotArgs(arg.entries, record.slots, record.name, scope, arg.loc)
+  }
+
   private checkItem(name: string, loc?: Loc): void {
     if (this.universe.isMember('item', name)) return
     const near = closestNames(name, this.universe.members('item'), 2)
@@ -492,7 +634,17 @@ export class Checker {
   }
 
   /** `content` is metadata, but a wrong item name in it is still a wrong item name. */
-  private checkContent(arg: Arg, calleeName: string): void {
+  private checkContent(arg: Arg, calleeName: string, scope: Scope): void {
+    // Without brackets it is an ordinary value: a parameter, or a field off a record. The
+    // pairing is gone by then, so all there is left to check is that they are items.
+    if (!arg.entries) {
+      const actual = this.typeOf(arg.value, scope, T.array(T.enum('item')))
+      if (!assignable(actual, T.array(T.enum('item')))) {
+        this.error(`content lists items, got ${showType(actual)}`, arg.value.loc)
+      }
+      return
+    }
+
     const read = readContent(arg)
     if (!read.ok) {
       this.error(read.error.message, read.error.loc, read.error.hint)
@@ -622,6 +774,9 @@ export class Checker {
       case 'field':
         return this.typeOfField(expr, scope)
 
+      case 'index':
+        return this.typeOfIndex(expr, scope)
+
       case 'measure':
         this.typeOf(expr.body, scope)
         return T.handle
@@ -691,12 +846,42 @@ export class Checker {
     return left.k === 'float' || right.k === 'float' ? T.float : T.int
   }
 
+  private typeOfIndex(expr: Extract<Expr, { kind: 'index' }>, scope: Scope): Type {
+    const index = this.typeOf(expr.index, scope)
+    if (index.k !== 'int' && index.k !== 'any') {
+      this.error(`an index is a whole number, got ${showType(index)}`, expr.index.loc)
+    }
+
+    const target = this.typeOf(expr.target, scope)
+    if (target.k === 'array') return target.of
+    if (target.k === 'coord') return T.int
+    // Every item of a written-out list, since which one is only known when it runs.
+    if (target.k === 'tuple') {
+      return target.items.every((item) => assignable(item, target.items[0])) ? (target.items[0] ?? T.any) : T.any
+    }
+    if (target.k !== 'any') this.error(`${showType(target)} cannot be indexed`, expr.loc)
+    return T.any
+  }
+
   private typeOfField(expr: Extract<Expr, { kind: 'field' }>, scope: Scope): Type {
     const target = this.typeOf(expr.target, scope)
 
     if (target.k === 'coord' || (target.k === 'tuple' && target.items.length === 2)) {
       if (expr.field === 'x' || expr.field === 'y') return T.int
       this.error(`a coordinate has only .x and .y, not .${expr.field}`, expr.loc)
+      return T.any
+    }
+
+    if (target.k === 'record') {
+      const record = this.records.get(target.name)
+      const field = record?.slots.find((slot) => slot.name === expr.field)
+      if (field) return field.type
+      const near = closestNames(expr.field, record?.slots.map((slot) => slot.name) ?? [], 2)
+      this.error(
+        `'${target.name}' has no field '.${expr.field}'`,
+        expr.loc,
+        near.length ? `did you mean ${near.map((n) => `.${n}`).join(' or ')}?` : undefined,
+      )
       return T.any
     }
 

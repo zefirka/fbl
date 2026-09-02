@@ -22,6 +22,7 @@ const PRECEDENCE: Record<string, number> = {
 
 const RESERVED = new Set([
   'defblock',
+  'defrecord',
   'def',
   'defaults',
   'for',
@@ -124,6 +125,8 @@ class Parser {
       switch (token.text) {
         case 'defblock':
           return this.parseDefblock()
+        case 'defrecord':
+          return this.parseDefrecord()
         case 'def':
           return this.parseDef()
         case 'defaults':
@@ -149,13 +152,13 @@ class Parser {
               : []
 
         // `row for i in 0..n => { … }` folds the loop into the layout.
-        let each: { name: string; iterable: Expr } | undefined
+        let each: { name: string; indexName?: string; iterable: Expr } | undefined
         if (token.text !== 'at' && this.at('for')) {
           this.next()
-          const name = this.expectIdent('a loop variable')
+          const names = this.parseLoopNames()
           this.expect('in', 'in a for header')
           this.skipSoftNewlines()
-          each = { name, iterable: this.parseExpr() }
+          each = { ...names, iterable: this.parseExpr() }
         }
 
         const body = this.parseArrow()
@@ -174,6 +177,17 @@ class Parser {
     }
 
     return { kind: 'expr', expr: this.parseExpr(), loc }
+  }
+
+  /**
+   * `for l in xs` or `for l, i in xs`. The second name counts the passes, which is what a
+   * body needs when it has to place its item at a row of its own.
+   */
+  private parseLoopNames(): { name: string; indexName?: string } {
+    const name = this.expectIdent('a loop variable')
+    if (!this.at(',')) return { name }
+    this.next()
+    return { name, indexName: this.expectIdent('a name for the loop index') }
   }
 
   /** `at`, `row` and `column` are block forms only when a `=> {` follows their arguments. */
@@ -221,6 +235,13 @@ class Parser {
     const params = this.parseParams()
     const body = this.parseArrow()
     return { kind: 'defblock', name, params, body, loc }
+  }
+
+  /** A block header with no body: the fields are parameters, and read exactly like them. */
+  private parseDefrecord(): Stmt {
+    const loc = this.next().loc
+    const name = this.expectIdent('a record name')
+    return { kind: 'defrecord', name, fields: this.parseParams(), loc }
   }
 
   private parseDef(): Stmt {
@@ -286,12 +307,12 @@ class Parser {
 
   private parseFor(): Stmt {
     const loc = this.next().loc
-    const name = this.expectIdent('a loop variable')
+    const { name, indexName } = this.parseLoopNames()
     this.expect('in', 'in a for statement')
     this.skipSoftNewlines()
     const iterable = this.parseExpr()
     const body = this.parseArrow()
-    return { kind: 'for', name, iterable, body, loc }
+    return { kind: 'for', name, indexName, iterable, body, loc }
   }
 
   private parseIf(): Stmt {
@@ -324,6 +345,7 @@ class Parser {
       const typeName = this.expectIdent('a parameter type')
       const array = this.at('[]')
       if (array) this.next()
+      const nameLoc = this.peek().loc
       const name = this.expectIdent('a parameter name')
 
       let fallback: Expr | undefined
@@ -333,7 +355,7 @@ class Parser {
         fallback = this.parseExpr()
       }
 
-      params.push({ type: { name: typeName, array, loc }, name, default: fallback, loc })
+      params.push({ type: { name: typeName, array, loc }, name, nameLoc, default: fallback, loc })
       if (this.at(',')) this.next()
       this.skipNewlines()
     }
@@ -345,21 +367,31 @@ class Parser {
   // ── Arguments ───────────────────────────────────────────────────────────────
 
   private parseArgList(): Arg[] {
+    return this.parseGroup().entries
+  }
+
+  /**
+   * Whether a comma was written matters to the caller: `(x)` is grouping and collapses back
+   * to `x`, while `(x,)` and `(x, y)` are a list.
+   */
+  private parseGroup(): { entries: Arg[]; sawComma: boolean } {
     this.expect('(', 'to open an argument list')
-    const args: Arg[] = []
+    const entries: Arg[] = []
+    let sawComma = false
     this.skipNewlines()
 
     while (!this.at(')') && this.peek().kind !== 'eof') {
-      args.push(this.parseArg())
+      entries.push(this.parseArg())
       this.skipNewlines()
       if (this.at(',')) {
+        sawComma = true
         this.next()
         this.skipNewlines()
       }
     }
 
     this.expect(')', 'to close an argument list')
-    return args
+    return { entries, sawComma }
   }
 
   /**
@@ -405,6 +437,23 @@ class Parser {
       return { label, labelLoc, value: this.parseExpr(), loc: labelLoc }
     }
 
+    // An unlabelled group may be a record written out — `(dir west, content (coal))` — so it
+    // is read as an argument list as well, and collapses back to plain grouping when it turns
+    // out to hold a single unlabelled value: `at (0, (lines - j))` is arithmetic, not a list.
+    if (this.at('(')) {
+      const mark = this.pos
+      const { entries, sawComma } = this.parseGroup()
+
+      if (!this.continuesExpression()) {
+        if (entries.length === 1 && !sawComma && entries[0].label === undefined) {
+          return { value: entries[0].value, entries: entries[0].entries, loc: entries[0].loc }
+        }
+        const items = entries.map((e) => e.value)
+        return { value: { kind: 'tuple', items, entries, loc: token.loc }, entries, loc: token.loc }
+      }
+      this.pos = mark
+    }
+
     const value = this.parseExpr()
     return { value, loc: value.loc }
   }
@@ -412,7 +461,7 @@ class Parser {
   /** True when the next token would extend an expression that just ended. */
   private continuesExpression(offset = 0): boolean {
     const token = this.peek(offset)
-    if (token.kind === 'punct' && (token.text === '.' || token.text === '..')) return true
+    if (token.kind === 'punct' && (token.text === '.' || token.text === '..' || token.text === '[')) return true
     return (token.kind === 'punct' || token.kind === 'ident') && PRECEDENCE[token.text] !== undefined
   }
 
@@ -466,11 +515,23 @@ class Parser {
 
   private parsePostfix(): Expr {
     let expr = this.parsePrimary()
-    while (this.at('.')) {
-      const loc = this.next().loc
-      expr = { kind: 'field', target: expr, field: this.expectIdent('a field name'), loc }
+    for (;;) {
+      if (this.at('.')) {
+        const loc = this.next().loc
+        expr = { kind: 'field', target: expr, field: this.expectIdent('a field name'), loc }
+        continue
+      }
+      if (this.at('[')) {
+        const loc = this.next().loc
+        this.skipSoftNewlines()
+        const index = this.parseExpr()
+        this.skipSoftNewlines()
+        this.expect(']', 'to close an index')
+        expr = { kind: 'index', target: expr, index, loc }
+        continue
+      }
+      return expr
     }
-    return expr
   }
 
   private parsePrimary(): Expr {

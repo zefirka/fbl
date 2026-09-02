@@ -196,6 +196,22 @@ export function blockSlots(
 }
 
 /**
+ * A record's fields, as slots. They are filled exactly the way a call's arguments are —
+ * by label, or bare when the type says which field it can only be — so a record literal
+ * needs no rules of its own, and misspelling a field reads like misspelling a slot.
+ */
+export function recordSlots(
+  fields: Array<{ name: string; typeName: string; array: boolean; required: boolean }>,
+  typeOf: (typeName: string, array: boolean) => Type,
+): SlotDef[] {
+  return fields.map((field) => ({
+    name: field.name,
+    type: typeOf(field.typeName, field.array),
+    required: field.required,
+  }))
+}
+
+/**
  * When a building arrives as a parameter its prototype is unknown until run time, so the
  * checker falls back to the union of every entity slot. Typos are still caught; whether the
  * particular machine has a `recipe` is left to the runtime.

@@ -4,7 +4,9 @@ import {
   entitySlots,
   FUNCTIONS,
   HELPER_SLOTS,
+  labelSpans,
   LAYOUT_SLOTS,
+  parse,
   showType,
   Universe,
   type BlockSignature,
@@ -24,6 +26,7 @@ export interface LanguageHost {
 const KEYWORD_DOCS: Record<string, string> = {
   import: 'Bring in a library: `import "stdlib"` — its blocks and helpers land in the same namespace.',
   defblock: 'Define a block: `defblock name (int n) => { … }`. It writes itself from (0, 0).',
+  defrecord: 'Name a bag of fields: `defrecord line (direction dir = east)`. Written like a block header, with no body.',
   def: 'Bind a value: `def prod-3 = repeat (4, productivity-module-3)`.',
   defaults: 'Preset any slot left blank: `defaults (tier blue)`, optionally narrowed to one entity.',
   for: 'Repeat. It does not position anything — use `row for` or compute the position yourself.',
@@ -72,6 +75,40 @@ function describeRecipe(registry: ProtoRegistry, name: string): string {
 
 export function registerLanguage(monaco: typeof Monaco, host: LanguageHost): void {
   const Kind = monaco.languages.CompletionItemKind
+
+  /**
+   * A slot name and its value sit side by side with nothing but a space between them, so the
+   * editor paints the names apart: `recipe iron-gear-wheel` reads as one thing and one value
+   * rather than two words. It comes from the syntax tree, not from a list, so a block's own
+   * parameters light up exactly like the built-in slots — and at its definition too.
+   */
+  monaco.languages.registerDocumentSemanticTokensProvider(LANGUAGE_ID, {
+    getLegend: () => ({ tokenTypes: ['parameter'], tokenModifiers: [] }),
+    releaseDocumentSemanticTokens: () => undefined,
+
+    provideDocumentSemanticTokens(model) {
+      let spans
+      try {
+        spans = labelSpans(parse(model.getValue()), vocabularyFor(host).isCallable)
+      } catch {
+        // Half-written source does not parse; the last good colouring stays until it does.
+        return { data: new Uint32Array() }
+      }
+
+      // Monaco wants deltas: line, then column relative to the previous token on that line.
+      const data: number[] = []
+      let line = 0
+      let column = 0
+      for (const span of spans.sort((a, b) => a.loc.line - b.loc.line || a.loc.col - b.loc.col)) {
+        const at = { line: span.loc.line - 1, column: span.loc.col - 1 }
+        data.push(at.line - line, at.line === line ? at.column - column : at.column, span.length, 0, 0)
+        line = at.line
+        column = at.column
+      }
+
+      return { data: new Uint32Array(data) }
+    },
+  })
 
   monaco.languages.registerCompletionItemProvider(LANGUAGE_ID, {
     triggerCharacters: [' ', '(', ',', '.'],

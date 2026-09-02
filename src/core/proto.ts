@@ -1,4 +1,4 @@
-import type { LabDataset, LabIcon, LabRecipe } from '../data/dataset'
+import type { LabBeacon, LabDataset, LabIcon, LabItem, LabMachine, LabRecipe } from '../data/dataset'
 import {
   ENTITY_GEOMETRY,
   ROTATABLE_MACHINES,
@@ -75,6 +75,12 @@ export class ProtoRegistry {
   readonly itemLabels = new Map<string, string>()
   /** Fluids move by pipe, not by belt, which is what makes a machine grow one. */
   readonly fluids = new Set<string>()
+  /** Crafting machines, for working out what a blueprint eats and makes. */
+  readonly machines = new Map<string, LabMachine>()
+  /** What each module does, including at every quality above normal. */
+  readonly moduleEffects = new Map<string, NonNullable<LabItem['module']>>()
+  /** Beacons, which hand their modules' effect to whatever stands near them. */
+  readonly beacons = new Map<string, LabBeacon>()
 
   constructor(
     readonly dataset: LabDataset,
@@ -88,6 +94,9 @@ export class ProtoRegistry {
       this.itemLabels.set(item.id, item.name)
       if (item.module) this.modules.add(item.id)
       if (item.category === 'fluids') this.fluids.add(item.id)
+      if (item.machine) this.machines.set(item.id, item.machine)
+      if (item.module) this.moduleEffects.set(item.id, item.module)
+      if (item.beacon) this.beacons.set(item.id, item.beacon)
 
       const overrides = ENTITY_GEOMETRY[item.id]
       const machineSize = item.machine?.size

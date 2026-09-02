@@ -25,6 +25,8 @@ export type Expr =
   | { kind: 'ternary'; condition: Expr; then: Expr; otherwise: Expr; loc: Loc }
   | { kind: 'range'; from: Expr; to: Expr; loc: Loc }
   | { kind: 'field'; target: Expr; field: string; loc: Loc }
+  /** `lines[0]` — one item out of a list, or the x or y of a coordinate. */
+  | { kind: 'index'; target: Expr; index: Expr; loc: Loc }
   | { kind: 'call'; callee: string; args: Arg[]; loc: Loc }
   | { kind: 'measure'; body: Expr; loc: Loc }
 
@@ -51,16 +53,25 @@ export interface Arg {
 export interface Param {
   type: TypeExpr
   name: string
+  /** Where the name itself is written, which is what the editor paints. */
+  nameLoc: Loc
   default?: Expr
   loc: Loc
 }
 
 export type Stmt =
   | { kind: 'defblock'; name: string; params: Param[]; body: Stmt[]; loc: Loc }
+  /**
+   * `defrecord line (direction dir = east, content content = ())` — a named bag of fields,
+   * written like a block header with no body. Its fields are ordinary parameters, defaults
+   * and all, so everything that knows how to fill a slot already knows how to fill a field.
+   */
+  | { kind: 'defrecord'; name: string; fields: Param[]; loc: Loc }
   | { kind: 'def'; name: string; type?: TypeExpr; value: Expr; loc: Loc }
   | { kind: 'assign'; name: string; type?: TypeExpr; value: Expr; loc: Loc }
   | { kind: 'defaults'; target?: string; targetLoc?: Loc; args: Arg[]; body?: Stmt[]; loc: Loc }
-  | { kind: 'for'; name: string; iterable: Expr; body: Stmt[]; loc: Loc }
+  /** `for l, i in lines` — the second name, when there is one, counts the passes. */
+  | { kind: 'for'; name: string; indexName?: string; iterable: Expr; body: Stmt[]; loc: Loc }
   | { kind: 'if'; condition: Expr; then: Stmt[]; else?: Stmt[]; loc: Loc }
   /** `throw "size must be at least 2"` — the author's own error, raised where it is written. */
   | { kind: 'throw'; value: Expr; loc: Loc }
@@ -71,7 +82,7 @@ export type Stmt =
       form: 'at' | 'row' | 'column' | 'transform'
       args: Arg[]
       /** `row for i in 0..n => { … }` — one layout item per pass. */
-      each?: { name: string; iterable: Expr }
+      each?: { name: string; indexName?: string; iterable: Expr }
       body: Stmt[]
       loc: Loc
     }

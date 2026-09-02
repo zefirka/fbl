@@ -5,3 +5,7 @@ dist-node/
 public/data/*/
 public/sprites/
 !public/data/.gitkeep
+
+# Secrets, and the context they open. The sealed copy is what gets committed.
+.env
+context.md

@@ -17,12 +17,18 @@ import {
   type Vec,
 } from './geometry'
 import type { Prototype, ProtoRegistry } from './proto'
-import { planRoute, type RouteResult, type RouteStep, type TileState } from './routing'
-import { Scene, type ContentEntry, type FilterSpec, type ModuleSpec, type SceneTransform } from './scene'
-import { bareSlot, blockSlots, entitySlots, findSlot, HELPER_SLOTS, LAYOUT_SLOTS, type SlotDef, DEFAULT_SLOTS } from './slots'
-import { flowsWith, LINE_KINDS, tileIndex, type TileIndex } from './topology'
-import { ALIGNMENTS, ROUTINGS, T, TIERS, TRANSFORMS, UNDERGROUND_TYPES, type Type } from './types'
-import { EnumValue, isHandle, makeHandle, show, type Handle, type Value } from './values'
+import { planRoute, type RouteResult, type TileState } from './routing'
+import { Scene, type ContentEntry, type FilterSpec, type ModuleSpec, type PlacedEntity, type SceneTransform } from './scene'
+import { bareSlot, blockSlots, entitySlots, findSlot, HELPER_SLOTS, LAYOUT_SLOTS, recordSlots, type SlotDef, DEFAULT_SLOTS } from './slots'
+import { flowsWith, LINE_KINDS } from './topology'
+import { ALIGNMENTS, namedType, ROUTINGS, T, TIERS, TRANSFORMS, UNDERGROUND_TYPES, type Type } from './types'
+import { EnumValue, isHandle, makeHandle, makeRecord, recordOf, show, type Handle, type Value } from './values'
+
+interface RecordDef {
+  name: string
+  fields: Param[]
+  slots: SlotDef[]
+}
 
 interface BlockDef {
   name: string
@@ -30,11 +36,16 @@ interface BlockDef {
   body: Stmt[]
 }
 
-/** A belt written with `auto`, waiting for the finished blueprint before it decides. */
+/**
+ * A belt written with `auto`, waiting for the finished blueprint before it decides.
+ *
+ * Only where its tiles live in the scene is remembered, never where they were put: a layout
+ * shifts them, a `transform` turns them, and the path has to be whatever it ended up being.
+ * Reading it back off the tiles themselves is the only way to be right about that.
+ */
 interface AutoRun {
-  /** Where its tiles start in the scene; the path maps onto them one for one. */
   from: number
-  path: Vec[]
+  length: number
   underground: Prototype
   reach: number
   loc: Loc
@@ -73,6 +84,9 @@ export class Runtime {
   readonly output: string[] = []
 
   private readonly blocks = new Map<string, BlockDef>()
+  private readonly records = new Map<string, RecordDef>()
+  /** Records being built right now, so one that holds itself is caught rather than looping. */
+  private readonly building: string[] = []
   /** Block calls being evaluated, innermost last, so `throw` can point at the caller. */
   private readonly callStack: Array<{ name: string; loc: Loc }> = []
   /**
@@ -110,7 +124,12 @@ export class Runtime {
     this.offset = vec(0, 0)
     this.output.length = 0
     this.blocks.clear()
+    this.records.clear()
 
+    // Records first: a block's parameters are read against them.
+    for (const statement of module.statements) {
+      if (statement.kind === 'defrecord') this.defineRecord(statement)
+    }
     for (const statement of module.statements) {
       if (statement.kind === 'defblock') {
         this.blocks.set(statement.name, { name: statement.name, params: statement.params, body: statement.body })
@@ -134,6 +153,10 @@ export class Runtime {
     switch (statement.kind) {
       case 'defblock':
         this.blocks.set(statement.name, { name: statement.name, params: statement.params, body: statement.body })
+        return
+
+      case 'defrecord':
+        this.defineRecord(statement)
         return
 
       case 'def':
@@ -173,9 +196,10 @@ export class Runtime {
         this.iterationSink = null
         const items = this.iterable(this.evaluate(statement.iterable, scope), statement.iterable.loc)
         try {
-          for (const item of items) {
+          for (const [at, item] of items.entries()) {
             const inner = scope.child()
             inner.set(statement.name, item)
+            if (statement.indexName) inner.set(statement.indexName, at)
             const from = this.scene.length
             this.runStatements(statement.body, inner)
             sink?.(from, this.scene.length)
@@ -230,9 +254,19 @@ export class Runtime {
     return args.find((arg) => argForm(arg, slots, (n) => this.isCallable(n)).slotName === name)
   }
 
-  private readContentOf(args: Arg[], slots: SlotDef[]): ContentEntry[] | undefined {
+  private readContentOf(args: Arg[], slots: SlotDef[], scope: Scope): ContentEntry[] | undefined {
     const arg = this.structuredArg(args, slots, 'content')
     if (!arg) return undefined
+
+    // `content (iron-ore left)` is read as written, because the pairing lives in the syntax.
+    // Without brackets it is an ordinary value — a parameter, or a field off a record — and
+    // that is the only way a list of items can reach here from somewhere else.
+    if (!arg.entries) {
+      const items = this.evaluate(arg.value, scope)
+      const listed = (Array.isArray(items) ? items : [items]).map(memberOf)
+      return listed.every((name) => name !== undefined) ? listed.map((item) => ({ item: item! })) : undefined
+    }
+
     const read = readContent(arg)
     if (!read.ok) return undefined
     return read.value.map((entry) => {
@@ -259,6 +293,31 @@ export class Runtime {
       name === 'underground' ||
       (name === 'balancer' && this.unlocked.has('balancer'))
     )
+  }
+
+  private defineRecord(statement: Extract<Stmt, { kind: 'defrecord' }>): void {
+    this.records.set(statement.name, {
+      name: statement.name,
+      fields: statement.fields,
+      slots: recordSlots(
+        statement.fields.map((field) => ({
+          name: field.name,
+          typeName: field.type.name,
+          array: field.type.array,
+          required: field.default === undefined,
+        })),
+        (name, array) => this.declaredType(name, array),
+      ),
+    })
+  }
+
+  /**
+   * What a declared type name means here. Only the shapes that decide which slot a bare
+   * value fills need to be real; everything else the checker has already settled.
+   */
+  private declaredType(name: string, array: boolean): Type {
+    const base = this.records.has(name) ? T.record(name) : (namedType(name) ?? T.any)
+    return array ? T.array(base) : base
   }
 
   private iterable(value: Value, loc?: Loc): Value[] {
@@ -340,9 +399,10 @@ export class Runtime {
     try {
       if (statement.each) {
         const each = statement.each
-        for (const value of this.iterable(this.evaluate(each.iterable, scope), each.iterable.loc)) {
+        for (const [at, value] of this.iterable(this.evaluate(each.iterable, scope), each.iterable.loc).entries()) {
           const inner = scope.child()
           inner.set(each.name, value)
+          if (each.indexName) inner.set(each.indexName, at)
           const from = this.scene.length
           this.runStatements(statement.body, inner)
           settle(from, this.scene.length)
@@ -447,6 +507,9 @@ export class Runtime {
       case 'field':
         return this.evaluateField(expr, scope)
 
+      case 'index':
+        return this.evaluateIndex(expr, scope)
+
       case 'measure': {
         const start = this.scene.length
         this.evaluate(expr.body, scope)
@@ -519,6 +582,20 @@ export class Runtime {
       default:
         return fail(`unknown operator '${expr.op}'`, expr.loc)
     }
+  }
+
+  private evaluateIndex(expr: Extract<Expr, { kind: 'index' }>, scope: Scope): Value {
+    const target = this.evaluate(expr.target, scope)
+    if (!Array.isArray(target)) fail(`${show(target)} cannot be indexed`, expr.loc)
+
+    const index = this.evaluate(expr.index, scope)
+    if (typeof index !== 'number' || !Number.isInteger(index)) {
+      fail(`an index is a whole number, got ${show(index)}`, expr.index.loc)
+    }
+    if (index < 0 || index >= target.length) {
+      fail(`index ${index} is outside a list of ${target.length}`, expr.loc)
+    }
+    return target[index]
   }
 
   private evaluateField(expr: Extract<Expr, { kind: 'field' }>, scope: Scope): Value {
@@ -623,6 +700,14 @@ export class Runtime {
         continue
       }
 
+      // A record is filled the way a call is, from the arguments as written, because its
+      // labels are what say which field is which.
+      const record = this.recordFor(slot.type)
+      if (record) {
+        filled.set(slot.name, this.recordValue(arg, form.expr, slot.type, record, scope))
+        continue
+      }
+
       // Content and filters are read from the arguments as written, not evaluated: the
       // pairing and the `not` live in the syntax and a value would flatten them away.
       filled.set(slot.name, slot.type.k === 'content' || slot.type.k === 'filters' ? null : this.evaluate(form.expr, scope))
@@ -637,6 +722,77 @@ export class Runtime {
     }
 
     return filled
+  }
+
+  /** The record a slot holds, whether it takes one or a list of them. */
+  private recordFor(type: Type): RecordDef | undefined {
+    const of = type.k === 'array' ? type.of : type
+    return of.k === 'record' ? this.records.get(of.name) : undefined
+  }
+
+  /**
+   * A record argument. Entries that are each a group of their own are the elements of a list;
+   * anything else is one record written out, and a bare number is that many at their defaults.
+   */
+  private recordValue(arg: Arg, expr: Expr, type: Type, record: RecordDef, scope: Scope): Value {
+    const list = type.k === 'array'
+
+    if (!arg.entries) {
+      return this.widenRecord(this.evaluate(expr, scope), type, record, scope, expr.loc)
+    }
+
+    if (list && arg.entries.length === 0) return []
+    if (list && arg.entries.every((entry) => entry.label === undefined && entry.entries !== undefined)) {
+      return arg.entries.map((entry) => this.buildRecord(entry.entries ?? [], record, scope, entry.loc))
+    }
+
+    const single = this.buildRecord(arg.entries, record, scope, arg.loc)
+    return list ? [single] : single
+  }
+
+  /**
+   * What a plain value means where a record was declared. A count is that many at their
+   * defaults, and `()` is one of them — the two spellings a default can carry, since a
+   * record literal is only ever written where an argument list is being read.
+   */
+  private widenRecord(value: Value, type: Type, record: RecordDef, scope: Scope, loc?: Loc): Value {
+    if (type.k === 'array') {
+      if (typeof value !== 'number') return value
+      const count = Math.max(0, Math.trunc(value))
+      return Array.from({ length: count }, () => this.buildRecord([], record, scope, loc))
+    }
+    return Array.isArray(value) && value.length === 0 ? this.buildRecord([], record, scope, loc) : value
+  }
+
+  private buildRecord(entries: Arg[], record: RecordDef, scope: Scope, loc?: Loc): Handle {
+    // A record that holds itself would build for ever; the checker says so first, and this
+    // is what keeps a program that got past it from hanging.
+    if (this.building.includes(record.name)) {
+      fail(`record '${record.name}' contains itself`, loc)
+    }
+    this.building.push(record.name)
+    try {
+      const filled = this.fillSlots(entries, record.slots, record.name, scope, false)
+      const fields: Record<string, Value> = {}
+
+      for (const field of record.fields) {
+        if (filled.has(field.name)) {
+          fields[field.name] = filled.get(field.name)!
+          continue
+        }
+        if (!field.default) fail(`'${record.name}' needs ${field.name}`, loc)
+
+        // A field's default is widened the same way a parameter's is, so `part = ()` is the
+        // inner record at its own defaults rather than an empty list.
+        const type = this.declaredType(field.type.name, field.type.array)
+        const nested = this.recordFor(type)
+        const value = this.evaluate(field.default, scope)
+        fields[field.name] = nested ? this.widenRecord(value, type, nested, scope, loc) : value
+      }
+      return makeRecord(record.name, fields)
+    } finally {
+      this.building.pop()
+    }
   }
 
   /** Innermost scope wins; inside a scope, an entity name beats a family beats a bare slot. */
@@ -654,6 +810,8 @@ export class Runtime {
   // ── Placement ───────────────────────────────────────────────────────────────
 
   private placeBlock(block: BlockDef, args: Arg[], scope: Scope, loc: Loc): Handle {
+    // Only records are resolved: every other type has had its say in the checker, and a real
+    // type here would change which slot a bare value picks.
     const slots = blockSlots(
       block.params.map((p) => ({
         name: p.name,
@@ -661,15 +819,21 @@ export class Runtime {
         array: p.type.array,
         required: p.default === undefined,
       })),
-      () => T.any,
+      (name, array) => (this.records.has(name) ? this.declaredType(name, array) : T.any),
     )
     const filled = this.fillSlots(args, slots, block.name, scope, false)
 
     const inner = new Scope()
     for (const param of block.params) {
-      if (filled.has(param.name)) inner.set(param.name, filled.get(param.name)!)
-      else if (param.default) inner.set(param.name, this.evaluate(param.default, inner))
-      else fail(`'${block.name}' needs ${param.name}`, loc)
+      const value = filled.has(param.name)
+        ? filled.get(param.name)!
+        : param.default
+          ? this.evaluate(param.default, inner)
+          : fail(`'${block.name}' needs ${param.name}`, loc)
+
+      const type = this.declaredType(param.type.name, param.type.array)
+      const record = this.recordFor(type)
+      inner.set(param.name, record ? this.widenRecord(value, type, record, scope, loc) : value)
     }
 
     const at = filled.has('at') ? this.toVec(filled.get('at')!, 'at', loc) : vec(0, 0)
@@ -723,7 +887,7 @@ export class Runtime {
     const entity = this.scene.place(proto, position.x, position.y, dir, {
       recipe,
       modules,
-      content: this.readContentOf(args, slots),
+      content: this.readContentOf(args, slots, scope),
       filters: proto.kind === 'inserter' ? this.readFiltersOf(args, slots) : undefined,
       splitterFilter: proto.kind === 'splitter' ? memberOf(filled.get('filter')) : undefined,
       inPriority: side(filled.get('in-priority')),
@@ -767,7 +931,7 @@ export class Runtime {
       points.push(vec(last.x + step.x * (length - 1), last.y + step.y * (length - 1)))
     }
 
-    const content = this.readContentOf(args, HELPER_SLOTS.belt)
+    const content = this.readContentOf(args, HELPER_SLOTS.belt, scope)
     const corners = points.filter((p, i) => i === 0 || p.x !== points[i - 1].x || p.y !== points[i - 1].y)
     const path = expandPath(corners, loc)
     const from = this.scene.length
@@ -790,7 +954,7 @@ export class Runtime {
       const underground = this.beltProto('underground', filled, loc)
       this.autoRuns.push({
         from,
-        path,
+        length: path.length,
         underground,
         reach: underground.undergroundReach ?? 0,
         loc,
@@ -821,69 +985,204 @@ export class Runtime {
 
     const waiting = new Set<number>()
     for (const run of this.autoRuns) {
-      for (let i = 0; i < run.path.length; i++) waiting.add(run.from + i)
+      for (let i = 0; i < run.length; i++) waiting.add(run.from + i)
     }
     const dropped = new Set<number>()
 
+    // Two passes. The first goes in source order, each run yielding to the ones above it,
+    // which is the tie-break when two runs want the same tile. Whatever could not be routed
+    // that way is tried once more with the whole blueprint visible: a lane is often finished
+    // by a run written further down, and refusing to look at it would call a line impossible
+    // when the picture plainly shows it working.
+    const failed: AutoRun[] = []
     for (const run of this.autoRuns) {
-      for (let i = 0; i < run.path.length; i++) waiting.delete(run.from + i)
+      for (let i = 0; i < run.length; i++) waiting.delete(run.from + i)
+      if (!this.settleRun(run, waiting, dropped, false)) failed.push(run)
+    }
+    for (const run of failed) this.settleRun(run, waiting, dropped, true)
 
-      const standing = this.scene.entities.filter(
-        (_, index) => !waiting.has(index) && !dropped.has(index) && !this.isRunTile(run, index),
-      )
-      const occupied = tileIndex(standing, () => true)
+    if (dropped.size) this.scene.remove(dropped)
+  }
 
-      const tiles: TileState[] = run.path.map((point, i) => {
-        const there = occupied.get(`${point.x},${point.y}`)
-        if (!there) return 'free'
-        return flowsWith(there, this.headingAt(run.path, i)) ? 'through' : 'blocked'
+  /** Routes one run against the scene as it stands. Reports only on the last attempt. */
+  private settleRun(run: AutoRun, waiting: ReadonlySet<number>, dropped: Set<number>, last: boolean): boolean {
+    {
+
+      // Wherever the tiles ended up is the path — they have been through every layout and
+      // every `transform` that wraps them.
+      const path = Array.from({ length: run.length }, (_, i) => {
+        const tile = this.scene.entities[run.from + i]
+        return vec(tile.x, tile.y)
       })
 
-      const plan = planRoute(run.path, tiles, run.reach)
-      if (!plan.ok) this.reportRoute(plan, occupied, run)
+      // Which scene index sits on each tile, so a tunnel end can take over the belt it lands
+      // on. Runs still waiting their turn are invisible: a belt yields to one written above
+      // it and never to one written below.
+      const standing = new Map<string, number>()
+      this.scene.entities.forEach((entity, index) => {
+        if (waiting.has(index) || dropped.has(index) || this.isRunTile(run, index)) return
+        for (let dx = 0; dx < entity.w; dx++) {
+          for (let dy = 0; dy < entity.h; dy++) standing.set(`${entity.x + dx},${entity.y + dy}`, index)
+        }
+      })
+      // Ground a tunnel of this line already runs beneath. The belt above it is the same
+      // lane arriving twice, not a second one — whatever else stands on the tile.
+      const buried = this.tunnelledTiles(waiting, dropped, run)
 
-      for (let i = 0; i < run.path.length; i++) {
+      const tiles: TileState[] = path.map((point, i) => {
+        const heading = this.headingAt(path, i)
+        const index = standing.get(`${point.x},${point.y}`)
+        if (index === undefined) return 'free'
+        const there = this.scene.entities[index]
+        if (flowsWith(there, heading)) {
+          // A plain belt is a stretch of this line; a splitter or tunnel end is its own thing.
+          return there.proto.kind === 'belt' ? 'line' : 'joint'
+        }
+        return heading !== undefined && buried.get(`${point.x},${point.y}`) === heading ? 'joint' : 'blocked'
+      })
+
+      const at = (point: Vec) => {
+        const index = standing.get(`${point.x},${point.y}`)
+        return index === undefined ? undefined : this.scene.entities[index]
+      }
+
+      /**
+       * A run ending inside an obstacle is not the end of the line. Where the belt written
+       * next door carries on past it, the tunnel may surface there: the two are one line, and
+       * a player looking at the picture sees a single lane that dives under the machines and
+       * comes up on the far side. Only a plain belt already going our way qualifies, and only
+       * one tile at each end — enough to give the tunnel somewhere to land.
+       */
+      const reach = (from: Vec, travel: number | undefined, sign: 1 | -1) => {
+        if (travel === undefined) return undefined
+        const step = directionStep(travel)
+        const point = vec(from.x + step.x * sign, from.y + step.y * sign)
+        const there = at(point)
+        // Whichever side it lies on, it has to be going *our* way to be our line.
+        return there && there.proto.kind === 'belt' && flowsWith(there, travel) ? point : undefined
+      }
+
+      const back = this.headingAt(path, 0)
+      const ahead = this.headingAt(path, path.length - 1)
+      const before = reach(path[0], back, -1)
+      const after = reach(path[path.length - 1], ahead, 1)
+
+      const whole = [...(before ? [before] : []), ...path, ...(after ? [after] : [])]
+      const wholeTiles: TileState[] = [
+        ...(before ? (['line'] as TileState[]) : []),
+        ...tiles,
+        ...(after ? (['line'] as TileState[]) : []),
+      ]
+      const offset = before ? 1 : 0
+
+      const plan = planRoute(whole, wholeTiles, run.reach)
+      if (!plan.ok) {
+        // A belt that cannot be routed is still worth seeing: leaving it laid flat puts the
+        // problem on screen in red, where an error would have taken the whole blueprint with
+        // it and left nothing to look at.
+        //
+        // What can still be merged is merged even so. A tile already carrying a line going
+        // this way was never a conflict — the belt joins it — and marking it red would bury
+        // the tiles that are one under a pile that is not.
+        if (!last) return false
+        for (let i = 0; i < run.length; i++) if (tiles[i] !== 'free' && tiles[i] !== 'blocked') dropped.add(run.from + i)
+        this.reportRoute(plan, at, run)
+        return false
+      }
+
+      // A tunnel end that landed on the neighbour's belt turns it into that end, in place.
+      for (const [i, point] of [
+        [0, before],
+        [whole.length - 1, after],
+      ] as const) {
+        const step = plan.steps[i]
+        if (!point || (step !== 'in' && step !== 'out')) continue
+        const neighbour = this.scene.entities[standing.get(`${point.x},${point.y}`)!]
+        neighbour.proto = run.underground
+        neighbour.undergroundType = step === 'in' ? 'input' : 'output'
+      }
+
+      for (let i = 0; i < run.length; i++) {
         const entity = this.scene.entities[run.from + i]
-        const step = (plan as { steps: RouteStep[] }).steps[i]
+        const step = plan.steps[i + offset]
 
         if (step === 'skip') dropped.add(run.from + i)
         else if (step === 'in' || step === 'out') {
           entity.proto = run.underground
           entity.undergroundType = step === 'in' ? 'input' : 'output'
+          // The belt this end lands on was the same line; the tunnel takes its place.
+          if (tiles[i] === 'line') dropped.add(standing.get(`${path[i].x},${path[i].y}`)!)
         }
       }
     }
 
-    if (dropped.size) this.scene.remove(dropped)
+    return true
+  }
+
+  /**
+   * Every tile an underground pair runs beneath, and which way it is heading there. A belt
+   * laid over one of those is the same lane a second time: the line is already carried.
+   */
+  private tunnelledTiles(waiting: ReadonlySet<number>, dropped: ReadonlySet<number>, run: AutoRun): Map<string, number> {
+    const covered = new Map<string, number>()
+    const visible = this.scene.entities.filter(
+      (entity, index) =>
+        entity.proto.kind === 'underground-belt' &&
+        !waiting.has(index) &&
+        !dropped.has(index) &&
+        !this.isRunTile(run, index),
+    )
+
+    for (const entry of visible) {
+      if (entry.undergroundType !== 'input') continue
+      const step = directionStep(entry.dir)
+      // Walk to the matching exit; anything else on the way is what the pair goes under.
+      for (let i = 1; i <= (entry.proto.undergroundReach ?? 0) + 1; i++) {
+        const x = entry.x + step.x * i
+        const y = entry.y + step.y * i
+        const exit = visible.find(
+          (other) => other.x === x && other.y === y && other.undergroundType === 'output' && other.dir === entry.dir,
+        )
+        if (exit) break
+        covered.set(`${x},${y}`, entry.dir)
+      }
+    }
+
+    return covered
   }
 
   private isRunTile(run: AutoRun, index: number): boolean {
-    return index >= run.from && index < run.from + run.path.length
+    return index >= run.from && index < run.from + run.length
   }
 
   /** Turns a routing failure into something the author can act on. */
-  private reportRoute(plan: Extract<RouteResult, { ok: false }>, occupied: TileIndex, run: AutoRun): never {
+  private reportRoute(
+    plan: Extract<RouteResult, { ok: false }>,
+    at: (point: Vec) => PlacedEntity | undefined,
+    run: AutoRun,
+  ): void {
     const where = `(${plan.at.x}, ${plan.at.y})`
-    const standing = occupied.get(`${plan.at.x},${plan.at.y}`)
-    const what = standing ? standing.proto.label : 'something'
+    const blocker = at(plan.at)
+    const what = blocker ? blocker.proto.label : 'something'
     // A line pointing the other way is the one that catches people out: a belt joins one
     // going its own way, so the mismatch is worth saying out loud.
     const crosswise =
-      standing && LINE_KINDS.has(standing.proto.kind)
-        ? `it runs ${directionName(standing.dir)}; a belt merges into a line going its own way and tunnels under any other`
+      blocker && LINE_KINDS.has(blocker.proto.kind)
+        ? `it runs ${directionName(blocker.dir)}; a belt merges into a line going its own way and tunnels under any other`
         : undefined
+
+    const say = (message: string, hint?: string) => this.scene.warn(`${message}; laid flat`, run.loc, hint)
 
     switch (plan.reason) {
       case 'starts-blocked':
-        fail(`the belt starts on ${what} at ${where}`, run.loc, crosswise ?? 'a tunnel needs a free tile to dive from')
+        return say(`the belt starts on ${what} at ${where}`, crosswise ?? 'a tunnel needs a free tile to dive from')
       case 'ends-blocked':
-        fail(`the belt ends on ${what} at ${where}`, run.loc, crosswise ?? 'a tunnel needs a free tile to surface on')
+        return say(`the belt ends on ${what} at ${where}`, crosswise ?? 'a tunnel needs a free tile to surface on')
       case 'turns':
-        fail(`the belt turns at ${where}, where it has to tunnel`, run.loc, 'move the corner clear of the obstacle')
+        return say(`the belt turns at ${where}, where it has to tunnel`, 'move the corner clear of the obstacle')
       case 'too-far':
-        fail(
+        return say(
           `${plan.needed} tiles to tunnel at ${where}, but ${run.underground.label} reaches ${run.reach}`,
-          run.loc,
           this.longerTier(run.reach),
         )
     }
@@ -916,7 +1215,7 @@ export class Runtime {
       this.scene.warn(`${proto.label} spans ${span - 1} tiles but reaches ${proto.undergroundReach}`, loc)
     }
 
-    const content = this.readContentOf(args, HELPER_SLOTS.underground)
+    const content = this.readContentOf(args, HELPER_SLOTS.underground, scope)
     const from = this.scene.length
     this.scene.place(proto, start.x, start.y, dir, { undergroundType: 'input', content, loc })
     this.scene.place(proto, end.x, end.y, dir, { undergroundType: 'output', content, loc })
@@ -1017,6 +1316,8 @@ function toCoordList(value: Value | undefined): Value[] {
 
 /** The static type a runtime value would have, for deciding which slot a bare value fills. */
 function typeOfValue(value: Value): Type | undefined {
+  const record = recordOf(value)
+  if (record !== undefined) return T.record(record)
   if (typeof value === 'number') return Number.isInteger(value) ? T.int : T.float
   if (value instanceof EnumValue) return T.enum(value.enumName as never)
   if (Array.isArray(value) && value.length === 2 && value.every((v) => typeof v === 'number')) return T.coord

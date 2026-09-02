@@ -90,6 +90,8 @@ export class BlueprintCanvas {
   private clashing = new Set<PlacedEntity>()
   /** Every tile that holds something, for deciding whether a fluid connection is met. */
   private occupied: TileIndex = new Map()
+  /** Whether the coordinate ruler is up, which is to say whether Alt is held. */
+  private probing = false
   private variants = new Map<PlacedEntity, SpriteRect>()
 
   private atlas: LoadedAtlas | null = null
@@ -113,6 +115,7 @@ export class BlueprintCanvas {
     this.ctx = ctx
 
     this.bindPointer()
+    this.bindProbe()
     new ResizeObserver(() => this.requestRender()).observe(canvas)
   }
 
@@ -225,6 +228,29 @@ export class BlueprintCanvas {
     }
   }
 
+  /**
+   * Holding a modifier turns the preview into a ruler: the tile under the cursor lights up and
+   * says what to type. Reading a coordinate off the picture and typing it into the source is
+   * most of what moving something means, and counting grid squares is a poor way to do it.
+   */
+  private bindProbe(): void {
+    const set = (on: boolean) => {
+      if (this.probing === on) return
+      this.probing = on
+      // The entity tooltip would sit over the very thing being read.
+      if (on) {
+        this.hovered = null
+        this.tooltip.hidden = true
+      } else this.updateHover()
+      this.requestRender()
+    }
+
+    window.addEventListener('keydown', (event) => set(event.altKey))
+    window.addEventListener('keyup', (event) => set(event.altKey))
+    // A window that loses focus never sees the key come back up.
+    window.addEventListener('blur', () => set(false))
+  }
+
   private bindPointer(): void {
     let dragging = false
     let last = { x: 0, y: 0 }
@@ -289,6 +315,13 @@ export class BlueprintCanvas {
 
   private updateHover(): void {
     if (!this.pointer) return
+    // While the ruler is up, the tooltip and the hover ring would both compete with the very
+    // thing being read — and the ring is the same colour as it.
+    if (this.probing) {
+      this.hovered = null
+      this.tooltip.hidden = true
+      return
+    }
     const world = this.toWorld(this.pointer.x, this.pointer.y)
     const tileX = Math.floor(world.x)
     const tileY = Math.floor(world.y)
@@ -379,6 +412,7 @@ export class BlueprintCanvas {
     for (const entity of this.drawOrder) this.drawOverlays(entity)
 
     this.drawOrigin()
+    this.drawProbe()
   }
 
   private useSprites(): boolean {
@@ -961,6 +995,45 @@ export class BlueprintCanvas {
     ctx.closePath()
     ctx.fill()
     ctx.restore()
+  }
+
+  /** The tile under the cursor, written the way it would be written in the source. */
+  private drawProbe(): void {
+    if (!this.probing || !this.pointer) return
+
+    const ctx = this.ctx
+    const scale = this.camera.scale
+    const world = this.toWorld(this.pointer.x, this.pointer.y)
+    const x = Math.floor(world.x)
+    const y = Math.floor(world.y)
+    const at = this.toScreen(x, y)
+
+    ctx.fillStyle = 'rgba(255, 174, 63, 0.18)'
+    ctx.fillRect(at.x, at.y, scale, scale)
+    ctx.strokeStyle = '#ffae3f'
+    ctx.lineWidth = 1.5
+    ctx.strokeRect(at.x + 0.75, at.y + 0.75, scale - 1.5, scale - 1.5)
+
+    const label = `(${x}, ${y})`
+    const size = 12
+    ctx.font = `600 ${size}px ui-monospace, Menlo, monospace`
+    ctx.textBaseline = 'middle'
+    const width = ctx.measureText(label).width
+    const padding = 6
+
+    // Above the tile by default, below it when there is no room up there.
+    const { width: viewW, height: viewH } = this.viewport()
+    const boxW = width + padding * 2
+    const boxH = size + padding * 1.5
+    const left = Math.min(Math.max(at.x + scale / 2 - boxW / 2, 4), viewW - boxW - 4)
+    const above = at.y - boxH - 6
+    const top = above < 4 ? at.y + scale + 6 : above
+
+    ctx.fillStyle = 'rgba(12, 15, 19, 0.92)'
+    roundRect(ctx, left, Math.min(top, viewH - boxH - 4), boxW, boxH, 5)
+    ctx.fill()
+    ctx.fillStyle = '#ffae3f'
+    ctx.fillText(label, left + padding, Math.min(top, viewH - boxH - 4) + boxH / 2)
   }
 
   private drawOrigin(): void {

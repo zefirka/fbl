@@ -4,6 +4,7 @@ import {
   ProtoRegistry,
   compile,
   computeCost,
+  computeRates,
   exportBlueprint,
   powerCoverage,
   type BlockSignature,
@@ -15,14 +16,18 @@ import { fetchBytes, type OnProgress } from '../data/progress'
 import { loadAtlas } from '../data/sprites'
 import { DEFAULT_VERSION, VERSIONS } from '../data/versions'
 import { BlueprintCanvas, type ViewMode } from './canvas'
-import { parseView, renderCost, type CostSection, type CostView, type IconSheet } from './cost-panel'
+import { parseCostView, renderCost, type CostSection, type CostView } from './cost-panel'
+import { type IconSheet, type PanelDeps, type PanelView } from './panel'
+import { parseRateView, renderRates, type RateSection, type RateView } from './rate-panel'
 import { renderDocs } from './docs'
 import { createEditor, type Editor } from './editor'
+import { Drawer } from './drawer'
 import { EXAMPLES } from './examples'
 import { Preloader } from './preloader'
 
 const STORAGE_SOURCE = 'fbl.source'
 const STORAGE_VERSION = 'fbl.version'
+const STORAGE_NAME = 'fbl.schema'
 const STORAGE_MODE = 'fbl.mode'
 
 const el = <T extends HTMLElement>(id: string): T => {
@@ -40,9 +45,12 @@ const dom = {
   console: el('console'),
   docs: el('docs'),
   cost: el('cost'),
+  rates: el('rates'),
   tabs: el('tabs'),
   version: el<HTMLSelectElement>('version'),
-  example: el<HTMLSelectElement>('example'),
+  menu: el('menu'),
+  drawer: el('drawer'),
+  scrim: el('scrim'),
   copy: el<HTMLButtonElement>('copy'),
   fit: el<HTMLButtonElement>('fit'),
   power: el<HTMLButtonElement>('power'),
@@ -60,11 +68,13 @@ const host: { registry: ProtoRegistry | null; blocks: BlockSignature[] } = { reg
 
 let source = readStorage(STORAGE_SOURCE) ?? EXAMPLES[0].source
 let blueprintText = ''
-let costView: CostView = parseView(readStorage('fbl.cost'))
+let costView: CostView = parseCostView(readStorage('fbl.cost'))
+let rateView: RateView = parseRateView(readStorage('fbl.rates'))
 let showPower = readStorage('fbl.power') === 'on'
 let iconSheet: IconSheet | null = null
-/** Kept so the cost panel can redraw when a section opens, without recompiling. */
+/** Kept so the panels can redraw when a section opens, without recompiling. */
 let lastCost: ReturnType<typeof computeCost> | null = null
+let lastRates: ReturnType<typeof computeRates> | null = null
 /** Bumped on every dataset load so a slow one cannot clobber a newer one. */
 let generation = 0
 
@@ -157,8 +167,10 @@ function build(): void {
     })
   }
 
-  lastCost = ran && scene.entities.length ? computeCost(scene, host.registry) : null
-  drawCost()
+  const worth = ran && scene.entities.length > 0
+  lastCost = worth ? computeCost(scene, host.registry) : null
+  lastRates = worth ? computeRates(scene, host.registry) : null
+  drawPanels()
 
   for (const diagnostic of all) log(diagnostic.severity, diagnostic.message, diagnostic.loc, diagnostic.hint)
   editor.setDiagnostics(all)
@@ -175,35 +187,57 @@ function build(): void {
       : ''
 }
 
-function drawCost(): void {
-  if (!lastCost || !host.registry) {
-    dom.cost.hidden = true
-    return
-  }
+function panelDeps(): PanelDeps | null {
   const registry = host.registry
-  dom.cost.innerHTML = renderCost(lastCost, costView, {
+  if (!registry) return null
+  return {
     icon: (name) => registry.icons.get(name),
     label: (name) => registry.itemLabels.get(name) ?? name,
     sheet: iconSheet,
-  })
-  dom.cost.hidden = dom.cost.innerHTML.trim() === ''
+  }
 }
 
-dom.cost.addEventListener('click', (event) => {
-  const button = (event.target as HTMLElement).closest('button')
-  if (!button) return
+/** Fills a panel, and hides it when it has nothing to say. */
+function fill(element: HTMLElement, html: string): void {
+  element.innerHTML = html
+  element.hidden = html.trim() === ''
+}
 
-  if (button.dataset.costToggle !== undefined) {
-    costView = { ...costView, collapsed: !costView.collapsed }
-  } else if (button.dataset.costSection) {
-    costView = { ...costView, section: button.dataset.costSection as CostSection }
-  } else {
-    return
-  }
+function drawPanels(): void {
+  const deps = panelDeps()
+  fill(dom.cost, lastCost && deps ? renderCost(lastCost, costView, deps) : '')
+  fill(dom.rates, lastRates && deps ? renderRates(lastRates, rateView, deps) : '')
+}
 
-  writeStorage('fbl.cost', JSON.stringify(costView))
-  drawCost()
-})
+/**
+ * Both panels fold and switch section the same way, and both remember where they were left.
+ */
+function bindPanel<Section extends string>(
+  element: HTMLElement,
+  key: string,
+  read: () => PanelView<Section>,
+  write: (view: PanelView<Section>) => void,
+): void {
+  element.addEventListener('click', (event) => {
+    const button = (event.target as HTMLElement).closest('button')
+    if (!button) return
+
+    const view = read()
+    if (button.dataset.panelToggle !== undefined) {
+      write({ ...view, collapsed: !view.collapsed })
+    } else if (button.dataset.panelSection) {
+      write({ ...view, section: button.dataset.panelSection as Section })
+    } else {
+      return
+    }
+
+    writeStorage(key, JSON.stringify(read()))
+    drawPanels()
+  })
+}
+
+bindPanel<CostSection>(dom.cost, 'fbl.cost', () => costView, (view) => (costView = view))
+bindPanel<RateSection>(dom.rates, 'fbl.rates', () => rateView, (view) => (rateView = view))
 
 // ── Dataset ───────────────────────────────────────────────────────────────────
 
@@ -242,7 +276,7 @@ async function selectVersion(id: string): Promise<void> {
     if (mine !== generation) return
     iconSheet = icons ? { url: iconsUrl, width: icons.naturalWidth, height: icons.naturalHeight } : null
     preview.setIcons(icons, (name: string) => host.registry?.icons.get(name))
-    drawCost()
+    drawPanels()
   })
 }
 
@@ -267,9 +301,6 @@ async function loadImage(url: string, onProgress?: OnProgress): Promise<HTMLImag
 for (const version of VERSIONS) dom.version.append(new Option(version.label, version.id))
 dom.version.value = readStorage(STORAGE_VERSION) ?? DEFAULT_VERSION.id
 
-dom.example.append(new Option('—', ''))
-for (const example of EXAMPLES) dom.example.append(new Option(example.label, example.id))
-
 let debounce = 0
 const editor: Editor = createEditor(dom.editor, source, host)
 editor.onChange((next) => {
@@ -281,15 +312,24 @@ editor.onChange((next) => {
 
 dom.version.addEventListener('change', () => void selectVersion(dom.version.value))
 
-dom.example.addEventListener('change', () => {
-  const example = EXAMPLES.find((e) => e.id === dom.example.value)
-  if (!example) return
-  editor.setValue(example.source)
-  source = example.source
-  dom.example.value = ''
-  build()
-  window.setTimeout(() => preview.fit(), 60)
+/** The name the buffer was last saved or opened under, so the drawer opens on it again. */
+let schemaName: string | null = readStorage(STORAGE_NAME) || null
+
+const drawer = new Drawer(dom.drawer, dom.scrim, dom.menu, {
+  open: (next) => {
+    editor.setValue(next)
+    source = next
+    writeStorage(STORAGE_SOURCE, next)
+    build()
+    window.setTimeout(() => preview.fit(), 60)
+  },
+  current: () => ({ source, name: schemaName }),
+  remember: (name) => {
+    schemaName = name
+    writeStorage(STORAGE_NAME, name ?? '')
+  },
 })
+drawer.setName(schemaName)
 
 dom.fit.addEventListener('click', () => preview.fit())
 

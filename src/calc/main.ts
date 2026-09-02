@@ -1,0 +1,439 @@
+import { ProtoRegistry, consumersOf, recipeGraph, solve, type Solution } from '../core'
+import { loadDataset } from '../data/loader'
+import { fetchBytes } from '../data/progress'
+import { DEFAULT_VERSION, VERSIONS, versionById } from '../data/versions'
+import type { IconSheet } from '../ui/icons'
+import type { SankeyLayout } from '../ui/sankey'
+import '../ui/base.css'
+import './style.css'
+
+import type { CardContext } from './cards'
+import { bindZoomPan, clamp, drawDiagram, fitView, type DiagramRefs } from './diagram'
+import { railHtml, type RailContext } from './rail'
+import { beltOptions, itemOptions, machineOptions, moduleOptions, qualityOptions, recipeOptions } from './options'
+import { openPicker, type PickerOption } from './picker'
+import { emptyState, readLink, readState, setNode, settingsOf, writeLink, writeState, type CalcState } from './state'
+import { diagramOf, type Carrier } from './view'
+
+/**
+ * The calculator page.
+ *
+ * It holds one piece of state — what you asked for and every choice you have made — and one
+ * pipeline: solve it, turn it into a diagram, draw it. Every control on the page does the
+ * same thing, which is change one field and run that pipeline again. There is nothing
+ * incremental here on purpose; a whole plan solves in milliseconds, and a rebuild that cannot
+ * disagree with itself is worth more than one that is quick.
+ */
+
+const el = <T extends HTMLElement>(id: string): T => {
+  const found = document.getElementById(id)
+  if (!found) throw new Error(`#${id} is missing from calc.html`)
+  return found as T
+}
+
+const dom = {
+  rail: el('rail'),
+  stage: el('stage'),
+  frame: el('board'),
+  svg: el<HTMLElement>('ribbons') as unknown as SVGSVGElement,
+  cards: el('cards'),
+  empty: el('empty'),
+  version: el<HTMLSelectElement>('version'),
+  stats: el('stats'),
+  fit: el<HTMLButtonElement>('fit'),
+  share: el<HTMLButtonElement>('share'),
+  zoom: el('zoom'),
+  loading: el('loading'),
+}
+
+const refs: DiagramRefs = { stage: dom.stage, frame: dom.frame, svg: dom.svg, cards: dom.cards }
+
+let state: CalcState = readLink(DEFAULT_VERSION.id) ?? readState(DEFAULT_VERSION.id)
+let registry: ProtoRegistry | null = null
+let sheet: IconSheet | null = null
+let solution: Solution | null = null
+let layout: SankeyLayout | null = null
+/** Bumped on every dataset load so a slow one cannot clobber a newer one. */
+let generation = 0
+/** The last fragment this page wrote, so a change from anywhere else can be told apart. */
+let ourLink = ''
+
+// ── The pipeline ──────────────────────────────────────────────────────────────
+
+function carrierOf(reg: ProtoRegistry): Carrier {
+  return {
+    belt: reg.entities.get(state.belt)?.beltSpeed ?? 15,
+    isFluid: (item) => reg.fluids.has(item),
+  }
+}
+
+function rebuild(refit = false): void {
+  if (!registry) return
+  const graph = recipeGraph(registry)
+  solution = solve(registry, state)
+
+  const carrier = carrierOf(registry)
+  const model = diagramOf(solution, carrier)
+  const ctx: CardContext = { registry, graph, sheet, state, carrier, solution }
+
+  dom.empty.hidden = model.cards.length > 0
+  layout = drawDiagram(refs, model, ctx)
+
+  const rail: RailContext = { registry, sheet, state, solution, carrier }
+  dom.rail.innerHTML = railHtml(rail)
+
+  const machines = solution.nodes.reduce((sum, node) => sum + Math.ceil(node.machines - 1e-6), 0)
+  dom.stats.textContent = solution.nodes.length
+    ? `${solution.nodes.length} recipes · ${machines} machines${solution.shortfalls.length ? ` · ${solution.shortfalls.length} short` : ''}`
+    : ''
+
+  writeState(state)
+  ourLink = writeLink(state)
+  if (refit && layout) applyView(fitView(refs, layout, state.view))
+}
+
+function applyView(view: { x: number; y: number; scale: number }): void {
+  state.view = view
+  dom.frame.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.scale})`
+  writeState(state)
+}
+
+// ── Controls ──────────────────────────────────────────────────────────────────
+
+/**
+ * Everything that is chosen is chosen the same way: a control on the page says what kind of
+ * thing it wants, and this decides what to offer and what to do with the answer.
+ */
+function openFor(button: HTMLElement): void {
+  if (!registry) return
+  const reg = registry
+  const graph = recipeGraph(reg)
+  const kind = button.dataset.pickOpen
+  const id = button.dataset.for ?? ''
+  const sheet_ = sheet
+
+  const show = (title: string, options: PickerOption[], chosen: string | undefined, onPick: (picked: string | null) => void, clear?: { label: string }) =>
+    openPicker(button, { title, options, chosen, sheet: sheet_, clear, onPick })
+
+  /** The tier row, where the version has tiers at all. */
+  const tiers = (of: 'machine' | 'module', chosen: string, onPick: (id: string) => void) =>
+    reg.profile.supportsQuality
+      ? { label: 'quality', options: qualityOptions(reg, of), chosen, onPick }
+      : undefined
+
+  switch (kind) {
+    case 'target':
+      return show('What do you want', itemOptions(reg), undefined, (item) => {
+        if (!item) return
+        // One a second to start with; the number beside it in the list is where it is changed.
+        state.targets = [...state.targets.filter((t) => t.item !== item), { item, rate: 1 }]
+        rebuild(true)
+      })
+
+    case 'belt':
+      return show('Counted in', beltOptions(reg), state.belt, (belt) => {
+        if (!belt) return
+        state.belt = belt
+        rebuild()
+      })
+
+    case 'machine': {
+      const recipe = graph.usable.get(id)
+      const node = solution?.nodes.find((n) => n.recipe === id)
+      if (!recipe) return
+
+      return openPicker(button, {
+        title: 'Which machine',
+        options: machineOptions(reg, recipe),
+        chosen: node?.machine,
+        sheet: sheet_,
+        quality: tiers('machine', settingsOf(state, id).quality ?? 'normal', (quality) => {
+          setNode(state, id, { quality: quality === 'normal' ? undefined : quality })
+          rebuild()
+        }),
+        onPick: (machine) => {
+          // A different machine has different slots, so what was in the old ones cannot stand.
+          setNode(state, id, { machine: machine ?? undefined, modules: undefined, beacon: undefined })
+          rebuild()
+        },
+      })
+    }
+
+    case 'module': {
+      const at = Number(button.dataset.slot ?? 0)
+      const slot = settingsOf(state, id).modules?.[at]
+      return openPicker(button, {
+        title: 'Modules',
+        options: moduleOptions(reg),
+        chosen: slot?.name,
+        sheet: sheet_,
+        clear: { label: 'empty the slot' },
+        everySlot: { label: 'every slot', on: everySlot, onToggle: (on) => (everySlot = on) },
+        quality: tiers('module', moduleQuality, (quality) => {
+          moduleQuality = quality
+          // Re-stamp whatever is already in the machine, which is what was being asked.
+          const held = settingsOf(state, id).modules
+          if (held?.length) setNode(state, id, { modules: held.map((m) => ({ ...m, quality: tierOf(quality) })) })
+          rebuild()
+        }),
+        onPick: (module) => setModule(id, at, module),
+      })
+    }
+
+    case 'beacon-module': {
+      const beacon = settingsOf(state, id).beacon
+      const build = (module: string, quality: string) => {
+        const slots = reg.beacons.get('beacon')?.modules ?? 2
+        setNode(state, id, {
+          beacon: {
+            name: 'beacon',
+            count: Math.max(1, beacon?.count ?? 1),
+            quality: tierOf(quality),
+            modules: Array.from({ length: slots }, () => ({ name: module, quality: tierOf(quality) })),
+          },
+        })
+        rebuild()
+      }
+
+      return openPicker(button, {
+        title: 'What is in the beacons',
+        options: moduleOptions(reg),
+        chosen: beacon?.modules[0]?.name,
+        sheet: sheet_,
+        clear: { label: 'no beacons' },
+        // A beacon and what is in it are built together, so one tier settles both.
+        quality: tiers('module', beacon?.quality ?? 'normal', (quality) => {
+          if (beacon?.modules[0]?.name) build(beacon.modules[0].name, quality)
+        }),
+        onPick: (module) => {
+          if (!module) return setNode(state, id, { beacon: undefined }), rebuild()
+          build(module, beacon?.quality ?? 'normal')
+        },
+      })
+    }
+
+    case 'recipe':
+      return show('How to make it', recipeOptions(reg, graph, graph.producers.get(id) ?? []), state.choice[id], (recipe) => {
+        if (!recipe) return
+        state.choice[id] = recipe
+        rebuild()
+      })
+
+    case 'use':
+      return show(
+        'What to do with it',
+        recipeOptions(reg, graph, consumersOf(graph, id)),
+        state.extra[id],
+        (recipe) => {
+          if (recipe) state.extra[id] = recipe
+          else delete state.extra[id]
+          rebuild()
+        },
+        { label: 'leave it' },
+      )
+  }
+}
+
+/** Whether picking a module fills the machine or only the slot that was clicked. */
+let everySlot = true
+/** The tier new modules are built to, until it is changed again. */
+let moduleQuality = 'normal'
+
+const tierOf = (quality: string) => (quality === 'normal' ? undefined : quality)
+
+function setModule(recipe: string, at: number, module: string | null): void {
+  const slots = registry?.machines.get(solution?.nodes.find((n) => n.recipe === recipe)?.machine ?? '')?.modules ?? 0
+  const held = [...(settingsOf(state, recipe).modules ?? [])]
+
+  if (everySlot) {
+    setNode(state, recipe, {
+      modules: module
+        ? Array.from({ length: slots }, () => ({ name: module, quality: tierOf(moduleQuality) }))
+        : undefined,
+    })
+    return rebuild()
+  }
+
+  held.length = slots
+  held[at] = module ? { name: module, quality: tierOf(moduleQuality) } : (undefined as never)
+  const kept = held.filter(Boolean)
+  setNode(state, recipe, { modules: kept.length ? kept : undefined })
+  rebuild()
+}
+
+document.addEventListener('click', (event) => {
+  const button = (event.target as HTMLElement).closest<HTMLElement>('[data-pick-open]')
+  if (button) openFor(button)
+})
+
+dom.rail.addEventListener('change', (event) => {
+  const target = event.target as HTMLElement
+  const at = target.closest<HTMLElement>('[data-target-rate]')?.dataset.targetRate
+  if (at === undefined) return
+
+  const rate = Number((target as HTMLInputElement).value)
+  state.targets = state.targets.map((entry, i) => (i === Number(at) ? { ...entry, rate } : entry))
+  rebuild()
+})
+
+dom.rail.addEventListener('click', (event) => {
+  const target = event.target as HTMLElement
+
+  const drop = target.closest<HTMLElement>('[data-target-drop]')?.dataset.targetDrop
+  if (drop !== undefined) {
+    state.targets = state.targets.filter((_, i) => i !== Number(drop))
+    return rebuild()
+  }
+
+  const forget = target.closest<HTMLElement>('[data-forget]')?.dataset.forget
+  if (forget) {
+    delete state.frontier[forget]
+    return rebuild()
+  }
+
+  if (target.id === 'reset') {
+    state = emptyState(state.version)
+    return rebuild(true)
+  }
+})
+
+dom.cards.addEventListener('click', (event) => {
+  const target = event.target as HTMLElement
+
+  const expand = target.closest<HTMLElement>('[data-expand]')?.dataset.expand
+  if (expand) {
+    state.frontier[expand] = 'expand'
+    return rebuild()
+  }
+
+  const collapse = target.closest<HTMLElement>('[data-collapse]')?.dataset.collapse
+  if (collapse) {
+    // Everything that was only there to feed this falls away with it, which is the point.
+    state.frontier[collapse] = 'raw'
+    return rebuild()
+  }
+
+  const step = target.closest<HTMLElement>('[data-beacon-step]')
+  if (step?.dataset.beaconStep) {
+    const recipe = step.dataset.beaconStep
+    const held = settingsOf(state, recipe).beacon
+    const count = Math.max(0, Math.min(12, (held?.count ?? 0) + Number(step.dataset.by ?? 1)))
+    setNode(state, recipe, {
+      beacon: count > 0 ? { name: 'beacon', count, modules: held?.modules ?? beaconModules() } : undefined,
+    })
+    return rebuild()
+  }
+
+  const pin = target.closest<HTMLElement>('[data-pin]')?.dataset.pin
+  if (pin) {
+    const node = solution?.nodes.find((n) => n.recipe === pin)
+    const already = state.nodes[pin]?.pin !== undefined
+    setNode(state, pin, { pin: already ? undefined : Math.ceil((node?.machines ?? 1) - 1e-6) })
+    return rebuild()
+  }
+})
+
+/** What goes in a beacon by default: the best speed module there is. */
+function beaconModules() {
+  const slots = registry?.beacons.get('beacon')?.modules ?? 2
+  const best = [...(registry?.modules ?? [])]
+    .filter((id) => (registry?.moduleEffects.get(id)?.speed ?? 0) > 0)
+    .sort((a, b) => (registry!.moduleEffects.get(b)!.speed ?? 0) - (registry!.moduleEffects.get(a)!.speed ?? 0))[0]
+  return best ? Array.from({ length: slots }, () => ({ name: best })) : []
+}
+
+dom.zoom.addEventListener('click', (event) => {
+  const how = (event.target as HTMLElement).dataset.zoom
+  if (!how) return
+  if (how === 'reset') return applyView({ ...state.view, scale: 1 })
+
+  const box = dom.stage.getBoundingClientRect()
+  const next = clamp(state.view.scale * (how === 'in' ? 1.25 : 0.8))
+  applyView({
+    scale: next,
+    x: box.width / 2 - ((box.width / 2 - state.view.x) * next) / state.view.scale,
+    y: box.height / 2 - ((box.height / 2 - state.view.y) * next) / state.view.scale,
+  })
+})
+
+dom.fit.addEventListener('click', () => {
+  if (layout) applyView(fitView(refs, layout, state.view))
+})
+
+dom.share.addEventListener('click', () => {
+  void navigator.clipboard.writeText(window.location.href).then(
+    () => flash('link copied'),
+    () => flash('could not copy — the link is in the address bar'),
+  )
+})
+
+function flash(message: string): void {
+  const held = dom.share.textContent
+  dom.share.textContent = message
+  window.setTimeout(() => (dom.share.textContent = held), 1600)
+}
+
+// A fragment this page did not write is someone pasting a plan in, and they mean to see it.
+window.addEventListener('hashchange', () => {
+  if (window.location.hash === ourLink) return
+
+  const shared = readLink(state.version)
+  if (!shared) return
+
+  state = shared
+  dom.version.value = state.version
+  void selectVersion(state.version)
+})
+
+document.addEventListener('keydown', (event) => {
+  if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return
+  if (event.key === 'f' && layout) applyView(fitView(refs, layout, state.view))
+})
+
+// ── Dataset ───────────────────────────────────────────────────────────────────
+
+dom.version.innerHTML = VERSIONS.map(
+  (version) => `<option value="${version.id}">${version.label}</option>`,
+).join('')
+dom.version.value = state.version
+
+dom.version.addEventListener('change', () => {
+  // A plan is written in one version's vocabulary; carrying it across would name ghosts.
+  state = emptyState(dom.version.value)
+  void selectVersion(state.version)
+})
+
+async function selectVersion(id: string): Promise<void> {
+  const mine = ++generation
+  dom.loading.hidden = false
+  dom.loading.textContent = 'loading game data…'
+
+  try {
+    const loaded = await loadDataset(id)
+    if (mine !== generation) return
+
+    registry = new ProtoRegistry(loaded.data, versionById(id))
+    state.version = id
+    if (!registry.entities.has(state.belt)) state.belt = 'transport-belt'
+    dom.loading.hidden = true
+    rebuild(true)
+
+    const blob = await fetchBytes(loaded.iconsUrl)
+    if (mine !== generation || !blob) return
+    const url = URL.createObjectURL(blob)
+    const image = new Image()
+    image.onload = () => {
+      sheet = { url, width: image.naturalWidth, height: image.naturalHeight }
+      rebuild()
+    }
+    image.src = url
+  } catch (error) {
+    dom.loading.hidden = false
+    dom.loading.textContent = error instanceof Error ? error.message : 'could not load the game data'
+  }
+}
+
+bindZoomPan(refs, state.view, (view) => {
+  state.view = view
+})
+void selectVersion(state.version)

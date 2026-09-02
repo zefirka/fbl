@@ -28,6 +28,8 @@ export type Type =
   /** `(copper-plate, copper-ore)` or `(not copper-plate, …)` — an inserter's item filters. */
   | { k: 'filters' }
   | { k: 'handle' }
+  /** A `defrecord` shape, carried by name: the fields themselves live in the record table. */
+  | { k: 'record'; name: string }
   | { k: 'array'; of: Type }
   | { k: 'tuple'; items: Type[] }
   | { k: 'any' }
@@ -46,6 +48,7 @@ export const T = {
   any: { k: 'any' } as Type,
   void: { k: 'void' } as Type,
   enum: (name: EnumName): Type => ({ k: 'enum', name }),
+  record: (name: string): Type => ({ k: 'record', name }),
   array: (of: Type): Type => ({ k: 'array', of }),
   tuple: (items: Type[]): Type => ({ k: 'tuple', items }),
 } as const
@@ -85,6 +88,8 @@ export function showType(type: Type): string {
     case 'enum':
       // `module-item` is an internal narrowing of `item`; users never write it.
       return type.name === 'module-item' ? 'item' : type.name
+    case 'record':
+      return type.name
     case 'array':
       return `${showType(type.of)}[]`
     case 'tuple':
@@ -103,6 +108,16 @@ export function showType(type: Type): string {
  */
 export function assignable(from: Type, to: Type): boolean {
   if (to.k === 'any' || from.k === 'any') return true
+  // A record answers to its own name and nothing else; a literal never reaches here, because
+  // whoever expects a record reads its fields as arguments rather than typing it as a tuple.
+  if (to.k === 'record') {
+    if (from.k === 'record') return from.name === to.name
+    // `()` is a record left at its defaults, which is how one is written where no literal
+    // can be: in a default, where the brackets would otherwise read as arithmetic.
+    return from.k === 'tuple' && from.items.length === 0
+  }
+  // A list of them is the one other place a record fits.
+  if (from.k === 'record') return to.k === 'array' && assignable(from, to.of)
   if (from.k === to.k && from.k !== 'enum' && from.k !== 'array' && from.k !== 'tuple') return true
 
   if (from.k === 'int' && to.k === 'float') return true
@@ -128,6 +143,10 @@ export function assignable(from: Type, to: Type): boolean {
   }
 
   if (to.k === 'array') {
+    // `lines 3` is three of whatever `lines` holds, each left at its defaults. It reads as a
+    // count because that is what it is; the alternative is writing the same empty record out
+    // three times.
+    if (to.of.k === 'record' && from.k === 'int') return true
     if (from.k === 'array') return assignable(from.of, to.of)
     if (from.k === 'tuple' && from.items.every((t) => assignable(t, to.of))) return true
     if (from.k === 'coord' && assignable(T.int, to.of)) return true

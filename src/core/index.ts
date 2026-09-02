@@ -13,9 +13,43 @@ export { check, Checker, type BlockSignature } from './check'
 export { computeCost, type Cost, type CostEntry } from './cost'
 export { LangError, type Diagnostic, type Loc } from './errors'
 export { Direction, directionName, type Rect, type Vec } from './geometry'
+export { labelSpans, type LabelSpan } from './labels'
 export { MODULE_NAMES, MODULES, moduleOffering } from './modules'
 export { parse } from './parser'
 export { powerCoverage, type PowerReport } from './power'
+export { computeRates, type RateEntry, type Rates } from './rates'
+export {
+  bestMachine,
+  consumersOf,
+  isFrontier,
+  machinesFor as machinesRunning,
+  recipeGraph,
+  type RecipeGraph,
+} from './calc/graph'
+export {
+  addEffects,
+  beaconEffects,
+  moduleEffects,
+  machineSpeed,
+  throughputOf,
+  NO_EFFECTS,
+  type Effects,
+  type Throughput,
+} from './calc/machine'
+export { minimise, type LPSolution, type LPStatus } from './calc/simplex'
+export { decodePlan, encodePlan, type SharedPlan } from './calc/share'
+export {
+  EMPTY_CONFIG,
+  nodeKey,
+  solve,
+  type CalcConfig,
+  type Flow,
+  type NodeConfig,
+  type Shortfall,
+  type SolvedNode,
+  type Solution,
+  type Target,
+} from './calc/solve'
 export { ProtoRegistry, type Prototype } from './proto'
 export { Runtime, type RunResult } from './run'
 export { Scene, type PlacedEntity } from './scene'

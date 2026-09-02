@@ -3,7 +3,7 @@ import type * as monaco from 'monaco-editor'
 export const LANGUAGE_ID = 'fbl'
 export const THEME_ID = 'fbl-dark'
 
-const KEYWORDS = ['defblock', 'def', 'defaults', 'for', 'in', 'if', 'else', 'and', 'or', 'not', 'measure', 'row', 'column', 'throw', 'transform', 'import']
+const KEYWORDS = ['defblock', 'defrecord', 'def', 'defaults', 'for', 'in', 'if', 'else', 'and', 'or', 'not', 'measure', 'row', 'column', 'throw', 'transform', 'import']
 const TYPES = ['int', 'float', 'number', 'bool', 'text', 'coord', 'direction', 'tier', 'quality', 'recipe', 'item', 'module', 'entity', 'handle', 'any']
 const SLOTS = ['at', 'from', 'to', 'via', 'dir', 'tier', 'recipe', 'modules', 'quality', 'type', 'length', 'gap', 'align', 'route', 'in', 'out']
 const LITERALS = [
@@ -81,7 +81,10 @@ export const theme: monaco.editor.IStandaloneThemeData = {
     { token: 'comment', foreground: '5d6673', fontStyle: 'italic' },
     { token: 'keyword', foreground: 'ff9f4a' },
     { token: 'type', foreground: '63b3ed' },
-    { token: 'attribute', foreground: 'c8a0ff' },
+    // Slot names, at a call and at a definition alike. The semantic provider paints the
+    // ones no fixed list could know about; this keeps the colour steady while it catches up.
+    { token: 'attribute', foreground: 'ffd866' },
+    { token: 'parameter', foreground: 'ffd866' },
     { token: 'constant', foreground: '6ede8a' },
     { token: 'predefined', foreground: '7fd1c8' },
     { token: 'number', foreground: 'd8b4fe' },

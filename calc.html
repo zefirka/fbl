@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>fbl — factory calculator</title>
+  </head>
+  <body>
+    <div id="app">
+      <header class="toolbar">
+        <span class="brand">fbl<span class="brand-dim">/calculator</span></span>
+
+        <label class="field">
+          <span>version</span>
+          <select id="version"></select>
+        </label>
+
+        <span class="spacer"></span>
+
+        <span id="stats" class="stats"></span>
+        <button id="fit" type="button" class="ghost" title="Fit the diagram to the view (F)">fit</button>
+        <button id="share" type="button" class="ghost" title="Copy a link to this plan">copy link</button>
+        <a id="studio" class="ghost" href="./index.html" title="Back to the schema editor">studio</a>
+      </header>
+
+      <main class="calc">
+        <aside class="rail" id="rail"></aside>
+        <div class="stage" id="stage">
+          <div class="board" id="board">
+            <svg class="ribbons" id="ribbons" xmlns="http://www.w3.org/2000/svg"></svg>
+            <div class="cards" id="cards"></div>
+          </div>
+          <div class="stage-empty" id="empty">ask for something on the left</div>
+          <div class="zoom" id="zoom">
+            <button type="button" data-zoom="out" aria-label="zoom out">−</button>
+            <button type="button" data-zoom="reset">100%</button>
+            <button type="button" data-zoom="in" aria-label="zoom in">+</button>
+          </div>
+        </div>
+      </main>
+
+      <div id="loading" class="loading">loading game data…</div>
+    </div>
+    <script type="module" src="/src/calc/main.ts"></script>
+  </body>
+</html>
