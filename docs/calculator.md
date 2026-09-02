@@ -139,6 +139,24 @@ icon the way the game stamps it. A legendary electric furnace smelts at 5 rather
 count on the card drops as you click. Quality on the *products* is a different question — a
 plan for legendary circuits is a plan with a quality chain in it — and this does not answer it.
 
+## Getting around it
+
+Zoom and pan, and nothing else: the wheel zooms about the cursor so the thing under it stays
+under it, and dragging the background moves the plan. Dragging a *card* does not, because a
+card is full of controls someone is trying to hit — and text on a card stays selectable,
+because a machine name is a thing you copy.
+
+Those two wants pull against each other: left alone, a drag that starts on the background
+sweeps a text selection across every card it crosses. So a press on the background refuses the
+browser's default before it starts one, and for the length of the drag nothing on the page is
+selectable. A press on the text itself is not touched at all, so selecting still works.
+
+The viewport is one object that is never replaced, which is not a detail. Panning holds a
+reference to it and writes into it as the pointer moves; anything that swaps it for a fresh
+object — fitting, the zoom buttons, following a link — leaves the pan writing into something
+nothing else reads. That showed up as a drag after a fit snapping the zoom back to whatever it
+was when the page loaded.
+
 ## Where it lives
 
 - `src/core/calc/graph.ts` — which recipes are on the table, who makes what, what counts as

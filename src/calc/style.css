@@ -88,6 +88,12 @@ button.x:hover { color: var(--error); }
   touch-action: none;
 }
 .stage.dragging { cursor: grabbing; }
+/* Nothing is selected by a pan, but everything stays selectable by a press on the text. */
+.stage.dragging,
+.stage.dragging * { user-select: none; }
+
+/* Inside a card the cursor tells the truth: text is text, a control is a control. */
+.card { cursor: auto; }
 
 .board { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
 .ribbons { position: absolute; top: 0; left: 0; overflow: visible; pointer-events: none; }

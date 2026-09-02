@@ -8,7 +8,7 @@ import '../ui/base.css'
 import './style.css'
 
 import type { CardContext } from './cards'
-import { bindZoomPan, clamp, drawDiagram, fitView, type DiagramRefs } from './diagram'
+import { bindZoomPan, clamp, drawDiagram, fitView, type DiagramRefs, type DiagramView } from './diagram'
 import { railHtml, type RailContext } from './rail'
 import { beltOptions, itemOptions, machineOptions, moduleOptions, qualityOptions, recipeOptions } from './options'
 import { openPicker, type PickerOption } from './picker'
@@ -58,6 +58,17 @@ let generation = 0
 /** The last fragment this page wrote, so a change from anywhere else can be told apart. */
 let ourLink = ''
 
+/**
+ * Where you are looking, as one object that is never replaced.
+ *
+ * Panning holds on to this and writes into it as the pointer moves, so anything that swaps it
+ * for a fresh object — fitting, the zoom buttons, following a link — would leave the pan
+ * writing into something nothing else reads. That showed up as a drag after a fit snapping the
+ * zoom back to whatever it was when the page loaded.
+ */
+const view: DiagramView = { ...state.view }
+state.view = view
+
 // ── The pipeline ──────────────────────────────────────────────────────────────
 
 function carrierOf(reg: ProtoRegistry): Carrier {
@@ -89,11 +100,11 @@ function rebuild(refit = false): void {
 
   writeState(state)
   ourLink = writeLink(state)
-  if (refit && layout) applyView(fitView(refs, layout, state.view))
+  if (refit && layout) applyView(fitView(refs, layout, view))
 }
 
-function applyView(view: { x: number; y: number; scale: number }): void {
-  state.view = view
+function applyView(next: DiagramView): void {
+  Object.assign(view, next)
   dom.frame.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.scale})`
   writeState(state)
 }
@@ -293,6 +304,7 @@ dom.rail.addEventListener('click', (event) => {
 
   if (target.id === 'reset') {
     state = emptyState(state.version)
+    state.view = view
     return rebuild(true)
   }
 })
@@ -345,19 +357,19 @@ function beaconModules() {
 dom.zoom.addEventListener('click', (event) => {
   const how = (event.target as HTMLElement).dataset.zoom
   if (!how) return
-  if (how === 'reset') return applyView({ ...state.view, scale: 1 })
+  if (how === 'reset') return applyView({ ...view, scale: 1 })
 
   const box = dom.stage.getBoundingClientRect()
-  const next = clamp(state.view.scale * (how === 'in' ? 1.25 : 0.8))
+  const next = clamp(view.scale * (how === 'in' ? 1.25 : 0.8))
   applyView({
     scale: next,
-    x: box.width / 2 - ((box.width / 2 - state.view.x) * next) / state.view.scale,
-    y: box.height / 2 - ((box.height / 2 - state.view.y) * next) / state.view.scale,
+    x: box.width / 2 - ((box.width / 2 - view.x) * next) / view.scale,
+    y: box.height / 2 - ((box.height / 2 - view.y) * next) / view.scale,
   })
 })
 
 dom.fit.addEventListener('click', () => {
-  if (layout) applyView(fitView(refs, layout, state.view))
+  if (layout) applyView(fitView(refs, layout, view))
 })
 
 dom.share.addEventListener('click', () => {
@@ -381,13 +393,14 @@ window.addEventListener('hashchange', () => {
   if (!shared) return
 
   state = shared
+  state.view = view
   dom.version.value = state.version
   void selectVersion(state.version)
 })
 
 document.addEventListener('keydown', (event) => {
   if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return
-  if (event.key === 'f' && layout) applyView(fitView(refs, layout, state.view))
+  if (event.key === 'f' && layout) applyView(fitView(refs, layout, view))
 })
 
 // ── Dataset ───────────────────────────────────────────────────────────────────
@@ -400,6 +413,7 @@ dom.version.value = state.version
 dom.version.addEventListener('change', () => {
   // A plan is written in one version's vocabulary; carrying it across would name ghosts.
   state = emptyState(dom.version.value)
+  state.view = view
   void selectVersion(state.version)
 })
 
@@ -433,7 +447,5 @@ async function selectVersion(id: string): Promise<void> {
   }
 }
 
-bindZoomPan(refs, state.view, (view) => {
-  state.view = view
-})
+bindZoomPan(refs, view, () => writeState(state))
 void selectVersion(state.version)

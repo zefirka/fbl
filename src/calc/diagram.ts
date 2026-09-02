@@ -303,6 +303,14 @@ export function bindZoomPan(
   refs.stage.addEventListener('pointerdown', (event) => {
     if (event.button !== 0) return
     if ((event.target as HTMLElement).closest('.card, .zoom')) return
+
+    // Dragging the background is a pan, not a sweep across everything it passes over. Left to
+    // itself the browser starts a text selection here and paints every card the drag crosses;
+    // refusing the default stops it before it begins, and the class stops one already going.
+    event.preventDefault()
+    document.activeElement instanceof HTMLElement && document.activeElement.blur()
+    window.getSelection()?.removeAllRanges()
+
     from = { x: event.clientX, y: event.clientY, vx: view.x, vy: view.y }
     refs.stage.setPointerCapture(event.pointerId)
     refs.stage.classList.add('dragging')
