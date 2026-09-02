@@ -1,8 +1,26 @@
-import type { Flow } from '../core'
-import { layoutSankey, type Ribbon, type SankeyLayout } from '../ui/sankey'
-import { cardHtml, type CardContext } from './cards'
-import { iconStyle } from '../ui/icons'
-import { carryText, labelOf, rateText, type DiagramModel } from './view'
+import type { Flow, ProtoRegistry } from '../core'
+import { iconStyle, type IconSheet } from '../ui/icons'
+import { layoutSankey, type Ribbon, type SankeyLayout, type SankeyOptions } from '../ui/sankey'
+import { carryText, labelOf, rateText, type CardModel, type Carrier, type DiagramModel } from './view'
+
+/**
+ * What a diagram needs to know that is not in the numbers: how to draw a box, and what to
+ * write on a ribbon. Both tabs lay out the same way and draw entirely different boxes, so the
+ * layout takes them as arguments rather than knowing about either.
+ */
+export interface DiagramSkin {
+  registry: ProtoRegistry
+  sheet: IconSheet | null
+  carrier: Carrier
+  card: (card: CardModel) => string
+  /** How a rate reads on a ribbon; the recycling tab counts a minute rather than a second. */
+  rate?: (value: number) => string
+  /** An extra line on a ribbon — the production tab counts machines on it. */
+  note?: (
+    flow: Flow,
+    split: Map<string, { rate: number; ways: number }>,
+  ) => { text: string; title: string } | undefined
+}
 
 /**
  * Drawing the plan, and getting around it.
@@ -50,10 +68,15 @@ export interface DiagramRefs {
   cards: HTMLElement
 }
 
-export function drawDiagram(refs: DiagramRefs, model: DiagramModel, ctx: CardContext): SankeyLayout {
+export function drawDiagram(
+  refs: DiagramRefs,
+  model: DiagramModel,
+  ctx: DiagramSkin,
+  options: SankeyOptions = {},
+): SankeyLayout {
   const heaviest = Math.max(0.001, ...model.nodes.map((node) => node.weight))
   const scale = Math.min(BELT_PIXELS, MAX_NODE / heaviest)
-  const layout = layoutSankey(model.nodes, model.links, { scale })
+  const layout = layoutSankey(model.nodes, model.links, { scale, ...options })
 
   const width = layout.width + PADDING * 2
   const height = layout.height + PADDING * 2
@@ -74,7 +97,7 @@ export function drawDiagram(refs: DiagramRefs, model: DiagramModel, ctx: CardCon
     const box = at.get(card.key)
     if (!box) return ''
     const style = `left:${box.x + PADDING}px;top:${box.y + PADDING}px;width:${box.width}px;min-height:${box.height}px`
-    return `<div class="slot" style="${style}">${cardHtml(card, ctx)}</div>`
+    return `<div class="slot" style="${style}">${ctx.card(card)}</div>`
   })
 
   // What is flowing, written on the flow — on every flow, however thin. A ribbon you have to
@@ -129,12 +152,13 @@ function centreLine(ribbon: Ribbon): string {
   return edge(stops, 0, false)
 }
 
-function ribbonSvg(ribbon: Ribbon, model: DiagramModel, ctx: CardContext, scale: number): string {
+function ribbonSvg(ribbon: Ribbon, model: DiagramModel, ctx: DiagramSkin, scale: number): string {
   const flow = ribbon.tag ? model.flows.get(ribbon.tag) : undefined
   const item = flow?.item ?? ''
 
+  const say = ctx.rate ?? ((value: number) => rateText(value))
   const title = flow
-    ? `${labelOf(ctx.registry, item)} · ${rateText(flow.rate)} · ${carryText(ctx.carrier, item, flow.rate)}`
+    ? `${labelOf(ctx.registry, item)} · ${say(flow.rate)} · ${carryText(ctx.carrier, item, flow.rate)}`
     : ''
 
   // The ribbon proper runs between the two tabs, not between the two cards.
@@ -210,7 +234,7 @@ function shareOf(layout: SankeyLayout, model: DiagramModel): Map<string, { rate:
 function flowTag(
   ribbon: Ribbon,
   model: DiagramModel,
-  ctx: CardContext,
+  ctx: DiagramSkin,
   split: Map<string, { rate: number; ways: number }>,
 ): string {
   const flow = ribbon.tag ? model.flows.get(ribbon.tag) : undefined
@@ -222,46 +246,21 @@ function flowTag(
   const x = (mid?.x ?? (ribbon.x1 + ribbon.x2) / 2) + PADDING
   const y = (mid?.y ?? (ribbon.y1 + ribbon.y2) / 2) + PADDING - (ribbon.backward ? 68 : 0)
   const style = iconStyle(ctx.registry.icons.get(flow.item), ctx.sheet, 16)
+  const mark = ribbon.tag ? model.marks?.get(ribbon.tag) : undefined
+  const art =
+    mark && mark !== 'normal'
+      ? `<span class="stamped"><i class="chip" style="${style}"></i><i class="chip mark" style="${iconStyle(ctx.registry.icons.get(mark), ctx.sheet, 10)}"></i></span>`
+      : `<i class="chip" style="${style}"></i>`
 
-  const name = labelOf(ctx.registry, flow.item)
-  const machines = machineShare(flow, ctx, split)
-  const title = `${name} · ${rateText(flow.rate)}${machines ? ` · ${machines.title}` : ''}`
+  const name = mark ? `${labelOf(ctx.registry, flow.item)} · ${mark}` : labelOf(ctx.registry, flow.item)
+  const say = ctx.rate ?? ((value: number) => rateText(value))
+  const machines = ctx.note?.(flow, split)
+  const title = `${name} · ${say(flow.rate)}${machines ? ` · ${machines.title}` : ''}`
 
   return `<div class="flow-tag" style="left:${x}px;top:${y}px" title="${title}">
-    <i class="chip" style="${style}"></i><span>${rateText(flow.rate)}</span>
+    ${art}<span>${say(flow.rate)}</span>
     ${machines ? `<b class="share">${machines.text}</b>` : ''}
   </div>`
-}
-
-/**
- * The machines behind one ribbon — written only where the source feeds more than one place.
- * Where it feeds one, the share is the whole node and the card already says so.
- */
-function machineShare(
-  flow: Flow,
-  ctx: CardContext,
-  split: Map<string, { rate: number; ways: number }>,
-): { text: string; title: string } | undefined {
-  if (!flow.from.startsWith('recipe:')) return undefined
-
-  const held = split.get(`${flow.from}|${flow.item}`)
-  if (!held || held.ways < 2 || held.rate <= 0) return undefined
-
-  const node = ctx.solution.nodes.find((entry) => entry.recipe === flow.from.slice('recipe:'.length))
-  if (!node || node.machines <= 0) return undefined
-
-  // Apportioned out of the machines you would *build*, not out of the fraction the plan
-  // strictly needs, so the numbers along the ribbons add up to the number on the card.
-  const built = Math.ceil(node.machines - 1e-6)
-  const part = flow.rate / held.rate
-  const share = built * part
-  const shown = share >= 10 ? Math.round(share) : Number(share.toFixed(1))
-  const machine = node.machine ? labelOf(ctx.registry, node.machine).toLowerCase() : 'machines'
-
-  return {
-    text: `${shown}×`,
-    title: `${shown} of ${built} ${machine} — ${Math.round(part * 100)}% of what they make`,
-  }
 }
 
 /**

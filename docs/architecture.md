@@ -33,7 +33,8 @@ four megabytes of Monaco to draw a diagram. They share `src/core`, `src/data`, a
 pieces of `src/ui` that are not about the editor (`base.css`, `icons.ts`, `sankey.ts`).
 
 ```
-src/core/calc/     the calculator's core: recipe graph, LP solver, machine maths, links
+src/core/calc/     the calculator's core: recipe graph, LP solver, machine maths, the
+                   quality ladder, links
 src/calc/          the calculator page: cards, pickers, diagram, rail, state
 src/ui/sankey.ts   flow-diagram layout: columns, ordering, lanes, ports — no DOM
 src/ui/base.css    palette, reset, toolbar — both pages start here
@@ -58,6 +59,12 @@ what actually ships.
 
 `.github/workflows/deploy.yml` builds the studio and publishes it to GitHub Pages on every
 push to `main`. It is a static site with no backend, so there is nothing else to run.
+
+The one piece of the game's art that *is* committed is `public/favicon.png` — the game's own
+icon, 25 kB, so the browser tab has a face. That is a different scale of thing from a sheet of
+every item in the game, which is why the rule below does not cover it. `npm run extract-sprites`
+refreshes it from the same install as everything else, so it is re-derivable rather than a blob
+nobody can account for.
 
 Game data is kept out of `main`, two different ways:
 

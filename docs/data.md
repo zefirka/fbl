@@ -68,6 +68,28 @@ steel makes it, and cliff explosives are packed into one — so a recipe that me
 not barrelling. Reading the rule as "anything that mentions a barrel" took out cliff explosives
 and the barrel's own recipe with it, and cliff explosives simply could not be made.
 
+### A recycling recipe is not the crafting recipe reversed
+
+The recycling tab needs the opposite of what the section above throws away, and the shape of it
+is not what you would guess. Across all 279 recycling recipes in Space Age:
+
+- **None of them returns a fluid.** Not one. Shred a processing unit and the twenty electronic
+  circuits come back as five; the five sulfuric acid are gone. The solid ingredients always come
+  back at exactly a quarter each — there is no case where one is dropped and another kept.
+- **63 of them return the item itself**, a quarter of it, instead of what it was made of. That
+  is what the game does with everything a recycler cannot take apart: every plate, every science
+  pack, anything smelted or made out of a fluid.
+- **Each one reverses one particular crafting recipe** — the one named after the item. Cast a
+  gear from molten iron and shredding it still hands back iron plates; nutrients have five
+  recipes and shredding them gives spoilage, so only the one made *from* spoilage feeds itself.
+- They carry `disallowedEffects: ['productivity']` and a time of the craft's divided by sixteen,
+  both of which are in the data and neither of which needs to be assumed.
+
+Working the return out from `recipe.in` instead of reading `<item>-recycling` looks right and is
+not: it drew sulfuric acid coming *out* of a recycler, and undercounted what the ladder actually
+buys by 59%, because a leaked fluid is bought again by every rung rather than once at the bottom.
+`recyclingOf` in `src/core/calc/quality.ts` reads it; [recycling.md](recycling.md) has the rest.
+
 ### Some recipes have no machine at all
 
 Space Age carries recipes for what happens **on its own**: food spoiling, bacteria multiplying

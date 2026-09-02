@@ -10,13 +10,81 @@ import { decodePlan, encodePlan, type NodeConfig, type SharedPlan, type Target }
 
 const KEY = 'fbl.calc'
 
+/**
+ * The recycling tab's setup: what you are farming and the one assembler-and-recycler pair that
+ * stands for every rung of the ladder.
+ */
+/** One machine on one rung. Modules are per slot, exactly as they are on a production node. */
+export interface QualitySide {
+  machine?: string
+  quality?: string
+  modules?: Array<{ name: string; quality?: string }>
+}
+
+/** Reads a rung's settings, whether or not it has any. */
+export const rungOf = (held: Record<string, QualitySide>, tier: string): QualitySide => held[tier] ?? {}
+
+/** Writes one rung, dropping the entry when it goes back to saying nothing. */
+export function setRung(
+  held: Record<string, QualitySide>,
+  tier: string,
+  patch: Partial<QualitySide>,
+): void {
+  const next: QualitySide = { ...rungOf(held, tier), ...patch }
+  for (const key of Object.keys(next) as Array<keyof QualitySide>) {
+    if (next[key] === undefined) delete next[key]
+  }
+  if (Object.keys(next).length === 0) delete held[tier]
+  else held[tier] = next
+}
+
+export interface QualitySettings {
+  item: string
+  /** Which recipe makes it, where there is a choice. */
+  recipe?: string
+  base: string
+  target: string
+  /**
+   * What stands on each rung, by quality, and only where it differs from the obvious. A rung
+   * nobody has touched runs the best machine that can do the job with nothing in it, which is
+   * why these are sparse rather than five entries filled in up front.
+   */
+  crafters: Record<string, QualitySide>
+  recyclers: Record<string, QualitySide>
+  /** Which end is fixed; the other is worked out from it. */
+  by: 'machines' | 'output'
+  /** Assemblers on the bottom rung, when that is the end being held. */
+  machines: number
+  /** Items of the target quality a minute, which is how anyone says it out loud. */
+  output: number
+}
+
+export type CalcMode = 'production' | 'recycling'
+
 export interface CalcState extends SharedPlan {
+  mode: CalcMode
+  quality: QualitySettings
   /** Where you were looking. Yours alone — it does not travel in a shared link. */
   view: { x: number; y: number; scale: number }
 }
 
+export function emptyQuality(): QualitySettings {
+  return {
+    item: '',
+    base: 'normal',
+    target: 'legendary',
+    crafters: {},
+    recyclers: {},
+    by: 'machines',
+    machines: 10,
+    output: 60,
+  }
+}
+
 export function emptyState(version: string): CalcState {
   return {
+    mode: 'production',
+    quality: emptyQuality(),
     version,
     targets: [],
     choice: {},
@@ -38,7 +106,24 @@ export function emptyState(version: string): CalcState {
 export function readLink(fallbackVersion: string): CalcState | undefined {
   const shared = decodePlan(window.location.hash.replace(/^#/, ''))
   if (!shared) return undefined
-  return { ...emptyState(fallbackVersion), ...shared }
+
+  const base = emptyState(fallbackVersion)
+  return {
+    ...base,
+    ...shared,
+    // The link carries these loosely typed, so they are narrowed on the way back in rather
+    // than trusted: a link is text somebody could have edited.
+    mode: shared.mode === 'recycling' ? 'recycling' : 'production',
+    quality: shared.quality
+      ? {
+          ...base.quality,
+          ...shared.quality,
+          by: shared.quality.by === 'output' ? 'output' : 'machines',
+          crafters: shared.quality.crafters ?? {},
+          recyclers: shared.quality.recyclers ?? {},
+        }
+      : base.quality,
+  }
 }
 
 /**
@@ -47,7 +132,10 @@ export function readLink(fallbackVersion: string): CalcState | undefined {
  * leaves the browser, so a plan is not something an access log somewhere collects.
  */
 export function writeLink(state: CalcState): string {
-  const link = state.targets.length ? `#${encodePlan(state)}` : ''
+  // Either tab is worth a link once it has something in it; the recycling one has no targets
+  // and asking about those alone left it unshareable.
+  const worth = state.targets.length > 0 || state.quality.item !== ''
+  const link = worth ? `#${encodePlan(state)}` : ''
   try {
     window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}${link}`)
   } catch {
@@ -71,6 +159,8 @@ export function readState(fallbackVersion: string): CalcState {
       extra: held.extra ?? {},
       frontier: held.frontier ?? {},
       nodes: held.nodes ?? {},
+      mode: held.mode === 'recycling' ? 'recycling' : 'production',
+      quality: { ...base.quality, ...(held.quality ?? {}) },
       view: { ...base.view, ...(held.view ?? {}) },
     }
   } catch {

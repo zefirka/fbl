@@ -15,7 +15,8 @@ this index; fix the index too.
 | **[language.md](language.md)** | You are writing or changing fbl itself: syntax, types, records, blocks, layout forms, defaults, libraries, and what the checker refuses. |
 | **[routing.md](routing.md)** | A belt goes somewhere unexpected, or you are touching `auto` — tunnels, merging, when two belts are the same line. |
 | **[blueprint.md](blueprint.md)** | Something is wrong in the exported string, or a version behaves differently: the encoding, positions, directions, modules, quality. |
-| **[calculator.md](calculator.md)** | Anything on the calculator page: the linear programme, what it decides and what it refuses to decide, the diagram, the controls, sharing a plan by link. |
+| **[calculator.md](calculator.md)** | The calculator's **production** tab: the linear programme, what it decides and what it refuses to decide, the diagram, the controls, sharing a plan by link. |
+| **[recycling.md](recycling.md)** | The calculator's **recycling** tab: farming quality through a loop of assemblers and recyclers, and why the odds are nothing like what people expect. |
 | **[studio.md](studio.md)** | Anything on the editor page: the preview, the editor's language service, the cost and rates panels, the power overlay, saved schemas. |
 | **[data.md](data.md)** | **Before** changing which recipes are usable, what counts as raw, or which recipe leads a list. Every trap in the dataset is written down here, and each one produced a plausible-looking wrong answer before it was found. |
 | **[sprites.md](sprites.md)** | A sprite lands in the wrong place, is missing, or the atlas needs rebuilding. |

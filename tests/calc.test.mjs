@@ -456,3 +456,322 @@ test('every craftable item in every version can actually be planned', async () =
     )
   }
 })
+
+// ── Farming quality ───────────────────────────────────────────────────────────
+
+import { loopRecipeFor, planQuality, recyclingOf, spread } from '../dist-node/core.mjs'
+
+const legendary = (name, count) => Array.from({ length: count }, () => ({ name, quality: 'legendary' }))
+const plain = (name, count) => Array.from({ length: count }, () => ({ name }))
+/** The same machine on every rung, which is the setup the ladder was first written against. */
+const everyTier = (reg, side) => Object.fromEntries(reg.qualities.map((tier) => [tier, side]))
+
+test('a quality roll goes up one tier nine times in ten, and again one time in ten of those', () => {
+  const landing = spread(0.3125, 0, 5)
+  assert.ok(near(landing.reduce((sum, value) => sum + value, 0), 1), 'it lands somewhere')
+
+  assert.ok(near(landing[0], 0.6875))
+  assert.ok(near(landing[1], 0.28125), 'nine tenths of the roll goes up exactly one')
+  assert.ok(near(landing[2], 0.028125))
+  assert.ok(near(landing[3], 0.0028125))
+  // The top tier has nowhere further to send anything, so it takes the whole tail.
+  assert.ok(near(landing[4], 0.0003125))
+
+  // From the top there is nothing to roll for at all.
+  assert.deepEqual(spread(0.9, 4, 5), [0, 0, 0, 0, 1])
+})
+
+test('what recycling gives back is read from the data, not assumed to be a quarter', () => {
+  const circuit = recyclingOf(registry, graph.usable.get('electronic-circuit'), 'electronic-circuit')
+  assert.ok(near(circuit.recovery, 0.25))
+
+  // A recipe that makes two at a time gives back an eighth of a set per item, not a quarter:
+  // the quarter is of the ingredients per *item*, and one craft made two of them.
+  const stick = recyclingOf(registry, registry.recipes.get('iron-stick'), 'iron-stick')
+  assert.ok(near(stick.recovery, 0.125), `iron sticks give back ${stick.recovery}`)
+})
+
+test('no recycler hands back a fluid, so every rung buys its own', () => {
+  const unit = registry.recipes.get('processing-unit')
+  const back = recyclingOf(registry, unit, 'processing-unit')
+
+  // Twenty circuits come back as five and the acid is simply gone — which is what the game's
+  // own recycling recipe says, and nothing like a quarter of the ingredients.
+  assert.equal(back.loop, 'ingredients')
+  assert.deepEqual(back.recovers, ['electronic-circuit', 'advanced-circuit'])
+  assert.deepEqual(back.fresh, ['sulfuric-acid'], 'the acid never comes back')
+  assert.ok(near(back.recovery, 0.25))
+  assert.equal([...back.gives.keys()].some((item) => registry.fluids.has(item)), false)
+
+  const plan = planQuality(
+    registry,
+    {
+      recipe: 'processing-unit',
+      base: 'normal',
+      target: 'legendary',
+      crafters: everyTier(registry, { machine: 'electromagnetic-plant', modules: legendary('quality-module-3', 5) }),
+      recyclers: everyTier(registry, { modules: legendary('quality-module-3', 4) }),
+    },
+    { machines: 20 },
+  )
+
+  // What goes round is bought once at the bottom; what leaks out is bought again for every
+  // craft on every rung. The upper rungs are a third of the crafts here, and every one of them
+  // wants its five acid.
+  const crafts = plan.tiers.reduce((sum, tier) => sum + tier.crafts, 0)
+  assert.ok(near(plan.ingredients.get('electronic-circuit'), 20 * plan.input))
+  assert.ok(near(plan.ingredients.get('sulfuric-acid'), 5 * crafts))
+  assert.ok(crafts > plan.input * 1.1, 'the rungs above the bottom craft too')
+
+  // And nothing a recycler hands back is acid: the returns are circuits, at the tier they came
+  // out at, and the acid is not part of the loop at all.
+  assert.equal(plan.recovers.includes('sulfuric-acid'), false)
+})
+
+test('what does not come apart comes back as itself, and climbs through the recyclers', () => {
+  const back = recyclingOf(registry, registry.recipes.get('plastic-bar'), 'plastic-bar')
+  assert.equal(back.loop, 'item', 'a plastic bar shreds into a quarter of a plastic bar')
+  assert.ok(near(back.recovery, 0.25))
+  assert.deepEqual(back.recovers, [])
+
+  const plan = planQuality(
+    registry,
+    {
+      recipe: 'plastic-bar',
+      base: 'normal',
+      target: 'epic',
+      crafters: everyTier(registry, { modules: legendary('quality-module-3', 3) }),
+      recyclers: everyTier(registry, { modules: legendary('quality-module-3', 4) }),
+    },
+    { machines: 10 },
+  )
+
+  assert.equal(plan.problem, undefined)
+  assert.equal(plan.loop, 'item')
+  // Only the bottom rung crafts — the ingredients arrive at one quality and stay there — and
+  // everything above it is fed by the recyclers.
+  assert.ok(plan.tiers[0].crafts > 0)
+  assert.deepEqual(plan.tiers.slice(1).map((tier) => tier.crafts), [0, 0, 0, 0])
+  assert.ok(plan.tiers[1].items > 0 && plan.tiers[2].items > 0)
+  assert.ok(plan.returned[0][1] > 0, 'a normal bar shredded comes back uncommon')
+  assert.ok(plan.output > 0)
+  // Nothing goes round, so both ingredients are bought for every craft.
+  assert.deepEqual(plan.fresh, ['petroleum-gas', 'coal'])
+})
+
+test('the ladder is built on the recipe a recycler reverses', () => {
+  // Nutrients have five recipes and shredding them hands back spoilage: only the one made from
+  // spoilage feeds itself.
+  assert.equal(loopRecipeFor(registry, 'nutrients'), 'nutrients-from-spoilage')
+  // A gear cast from molten iron comes back as plates, which no foundry will take.
+  assert.equal(loopRecipeFor(registry, 'iron-gear-wheel'), 'iron-gear-wheel')
+  // Where the item comes back as itself every recipe closes the loop, so this is not the
+  // question that decides it: iron ore is dug, grown out of bacteria and crushed out of
+  // asteroids, and picking between those is somebody else's business.
+  assert.equal(loopRecipeFor(registry, 'iron-ore'), undefined)
+
+  const casting = planQuality(
+    registry,
+    { recipe: 'casting-iron-gear-wheel', base: 'normal', target: 'epic', crafters: {}, recyclers: {} },
+    { machines: 1 },
+  )
+  assert.equal(casting.problem, 'no-loop', 'shredding the gears gives back something the foundry cannot take')
+  assert.deepEqual(casting.gives, ['iron-plate'])
+})
+
+test('a recipe with a byproduct farms the item that was asked for', () => {
+  const bare = { recipe: 'yumako-processing', base: 'normal', target: 'rare', crafters: {}, recyclers: {} }
+  const mash = planQuality(registry, { ...bare, item: 'yumako-mash' }, { machines: 1 })
+  const seed = planQuality(registry, { ...bare, item: 'yumako-seed' }, { machines: 1 })
+
+  // One craft gives two mash and a fiftieth of a seed, so which one is being farmed is the
+  // whole answer rather than a detail.
+  assert.ok(mash.tiers[0].items > seed.tiers[0].items * 50, `${mash.tiers[0].items} vs ${seed.tiers[0].items}`)
+})
+
+test('with nothing to farm for, the ladder is one rung and the loop never runs', () => {
+  const plan = planQuality(
+    registry,
+    {
+      recipe: 'electronic-circuit',
+      base: 'normal',
+      target: 'normal',
+      crafters: { normal: { machine: 'assembling-machine-3' } },
+      recyclers: {},
+    },
+    { machines: 1 },
+  )
+
+  // One set in, one item out, and nothing is recycled because everything is already wanted.
+  assert.ok(near(plan.yield, 1))
+  assert.equal(plan.tiers.every((tier) => tier.recycled === 0), true)
+  assert.equal(plan.tiers.filter((tier) => tier.recyclers > 0).length, 0)
+  // An assembling machine 3 at 1.25 speed on a half-second recipe is 2.5 crafts a second.
+  assert.ok(near(plan.output, 2.5))
+})
+
+test('the ladder is what makes legendaries, not the roll', () => {
+  const setup = {
+    recipe: 'electronic-circuit',
+    base: 'normal',
+    target: 'legendary',
+    crafters: everyTier(registry, { machine: 'electromagnetic-plant', modules: legendary('quality-module-3', 5) }),
+    recyclers: everyTier(registry, { modules: legendary('quality-module-3', 4) }),
+  }
+  const plan = planQuality(registry, setup, { machines: 20 })
+
+  assert.ok(near(plan.craftChance, 0.3125), 'five legendary quality 3s are a 31.25% chance')
+  assert.ok(near(plan.recycleChance, 0.25))
+
+  // Straight out of the machine a legendary is three in ten thousand. The ladder returns two
+  // orders of magnitude more than that, which is the entire reason to build one.
+  const direct = spread(plan.craftChance, 0, 5)[4] * 1.5
+  assert.ok(plan.yield > direct * 50, `${plan.yield} should dwarf the ${direct} that falls out directly`)
+
+  // The base tier runs exactly the machines it was told it had.
+  assert.ok(near(plan.tiers[0].crafters, 20, 1e-6))
+  assert.ok(plan.output > 0 && plan.tiers[4].kept > 0)
+  assert.equal(plan.tiers[4].recycled, 0, 'nothing at the target is thrown back')
+  assert.ok(plan.tiers[0].recyclers > 0, 'and everything below it is')
+})
+
+test('both directions are the same sum read from either end', () => {
+  const setup = {
+    recipe: 'iron-gear-wheel',
+    base: 'normal',
+    target: 'epic',
+    crafters: everyTier(registry, { machine: 'assembling-machine-3', modules: legendary('quality-module-3', 4) }),
+    recyclers: everyTier(registry, { modules: legendary('quality-module-3', 4) }),
+  }
+
+  const forward = planQuality(registry, setup, { machines: 12 })
+  const backward = planQuality(registry, setup, { output: forward.output })
+
+  assert.ok(near(backward.tiers[0].crafters, 12, 1e-6), 'asking for what 12 machines make wants 12 machines')
+  assert.ok(near(backward.input, forward.input, 1e-6))
+  for (const [at, tier] of forward.tiers.entries()) {
+    assert.ok(near(backward.tiers[at].items, tier.items, 1e-6), tier.quality)
+  }
+})
+
+test('a plan that cannot be worked out says which part is missing', () => {
+  const bare = { base: 'normal', target: 'legendary', crafters: {}, recyclers: {} }
+
+  assert.equal(planQuality(registry, { ...bare, recipe: 'nonsense' }, { machines: 1 }).problem, 'no-recipe')
+  // Fluids are not shredded, so there is no loop to build.
+  assert.equal(planQuality(registry, { ...bare, recipe: 'sulfuric-acid' }, { machines: 1 }).problem, 'no-recycling')
+
+  // Nothing to climb with is not a failure to report. The machines are settled on the cards,
+  // so refusing to draw the ladder would leave nowhere to put a module — it is worked out and
+  // simply has nothing climbing it.
+  const flat = planQuality(registry, { ...bare, recipe: 'electronic-circuit' }, { machines: 1 })
+  assert.equal(flat.problem, undefined)
+  assert.equal(flat.climbs, false)
+  assert.equal(flat.output, 0)
+  assert.ok(flat.tiers[0].crafters > 0, 'and the bottom rung is there to put modules in')
+})
+
+test('an output the ladder cannot reach still draws the ladder', () => {
+  const bare = { recipe: 'electronic-circuit', base: 'normal', target: 'legendary', crafters: {}, recyclers: {} }
+
+  // Nothing climbs, so no factory makes sixty a minute and the honest scale is zero — but a
+  // ladder scaled to zero has no cards, and the cards are where the modules go. It falls back
+  // to one machine at the bottom rung.
+  for (const drive of [{ output: 1 }, { output: 0 }]) {
+    const plan = planQuality(registry, bare, drive)
+    assert.equal(plan.problem, undefined)
+    assert.equal(plan.output, 0)
+    assert.ok(plan.tiers[0].crafters > 0, `${JSON.stringify(drive)} should still stand one machine up`)
+    assert.ok(plan.tiers[0].items > 0, 'and it should be making something to look at')
+  }
+
+  // Once something climbs, the asked-for end is the one that is held.
+  const climbing = planQuality(
+    registry,
+    { ...bare, crafters: everyTier(registry, { modules: legendary('quality-module-3', 4) }) },
+    { output: 1 },
+  )
+  assert.ok(near(climbing.output, 1))
+})
+
+test('a ladder travels in a link the same way a plan does', () => {
+  const plan = {
+    version: '2x1',
+    belt: 'express-transport-belt',
+    targets: [],
+    choice: {},
+    extra: {},
+    frontier: {},
+    nodes: {},
+    mode: 'recycling',
+    quality: {
+      item: 'electronic-circuit',
+      recipe: undefined,
+      base: 'normal',
+      target: 'legendary',
+      by: 'machines',
+      machines: 20,
+      output: 60,
+      crafters: {
+        normal: { machine: 'electromagnetic-plant', modules: [{ name: 'quality-module-3', quality: 'legendary' }] },
+        rare: { machine: 'assembling-machine-3', quality: 'epic' },
+      },
+      recyclers: { normal: { quality: 'rare', modules: [{ name: 'quality-module-3' }] } },
+    },
+  }
+
+  assert.deepEqual(decodePlan(encodePlan(plan)), plan)
+  // A production plan still decodes to exactly itself: what was not packed does not come back.
+  const plain = { version: '2x1', belt: 'transport-belt', targets: [{ item: 'coal', rate: 1 }], choice: {}, extra: {}, frontier: {}, nodes: {} }
+  assert.deepEqual(decodePlan(encodePlan(plain)), plain)
+})
+
+test('a rung nobody has touched runs the best machine with nothing in it', () => {
+  const bare = planQuality(
+    registry,
+    { recipe: 'electronic-circuit', base: 'normal', target: 'legendary', crafters: {}, recyclers: {} },
+    { machines: 10 },
+  )
+  // Nothing anywhere upgrades anything, so there is a ladder and nothing climbing it.
+  assert.equal(bare.problem, undefined)
+  assert.equal(bare.climbs, false)
+
+  // One rung with modules is enough to have a plan, and the rest still run their defaults.
+  const bottom = planQuality(
+    registry,
+    {
+      recipe: 'electronic-circuit',
+      base: 'normal',
+      target: 'legendary',
+      crafters: { normal: { modules: plain('quality-module-3', 5) } },
+      recyclers: {},
+    },
+    { machines: 10 },
+  )
+  assert.equal(bottom.climbs, true)
+  assert.equal(bottom.tiers[0].machine, 'electromagnetic-plant', 'the best machine, unasked')
+  assert.ok(near(bottom.tiers[0].chance, 0.125), 'five plain quality 3s are 12.5%')
+  assert.equal(bottom.tiers[1].chance, 0, 'and the rung above has nothing in it')
+})
+
+test('rungs can differ, and the ladder counts each one on its own terms', () => {
+  const setup = {
+    recipe: 'electronic-circuit',
+    base: 'normal',
+    target: 'legendary',
+    crafters: everyTier(registry, { machine: 'electromagnetic-plant', modules: legendary('quality-module-3', 5) }),
+    recyclers: everyTier(registry, { modules: legendary('quality-module-3', 4) }),
+  }
+  const same = planQuality(registry, setup, { machines: 20 })
+
+  // A legendary machine on the bottom rung alone: faster there, unchanged everywhere else.
+  const mixed = planQuality(
+    registry,
+    { ...setup, crafters: { ...setup.crafters, normal: { ...setup.crafters.normal, quality: 'legendary' } } },
+    { machines: 20 },
+  )
+
+  assert.ok(mixed.output > same.output, 'a faster bottom rung feeds more up the ladder')
+  assert.ok(near(mixed.yield, same.yield, 1e-9), 'but what a set is worth does not change')
+  assert.equal(mixed.tiers[1].chance, same.tiers[1].chance, 'and the rung above is untouched')
+})

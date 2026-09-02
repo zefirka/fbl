@@ -62,8 +62,10 @@ what and when you would open it. The short version:
 
 - **[docs/language.md](docs/language.md)** — the language, from placement to records to what
   the checker catches.
-- **[docs/calculator.md](docs/calculator.md)** — the calculator: the linear programme, the
-  diagram, sharing by link.
+- **[docs/calculator.md](docs/calculator.md)** — the calculator's production tab: the linear
+  programme, the diagram, sharing by link.
+- **[docs/recycling.md](docs/recycling.md)** — its recycling tab: farming quality, and why
+  three in ten thousand is the number that makes the loop worth building.
 - **[docs/studio.md](docs/studio.md)** — the editor page and its panels.
 - **[docs/data.md](docs/data.md)** — the game data and the traps in it. Read before touching
   anything about recipes or raw materials.

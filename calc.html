@@ -3,6 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/png" href="./favicon.png" />
     <title>fbl — factory calculator</title>
   </head>
   <body>
@@ -22,6 +23,11 @@
         <button id="share" type="button" class="ghost" title="Copy a link to this plan">copy link</button>
         <a id="studio" class="ghost" href="./index.html" title="Back to the schema editor">studio</a>
       </header>
+
+      <nav class="tabs" id="tabs">
+        <button type="button" data-mode="production" class="active">production</button>
+        <button type="button" data-mode="recycling">recycling</button>
+      </nav>
 
       <main class="calc">
         <aside class="rail" id="rail"></aside>

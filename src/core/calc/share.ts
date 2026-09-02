@@ -20,6 +20,29 @@ export interface SharedPlan extends CalcConfig {
   version: string
   /** The belt the widths and counts are reckoned in. */
   belt: string
+  /** Which tab was open, so a link opens on what was being shown. */
+  mode?: string
+  /** The recycling tab's setup, when there is one worth carrying. */
+  quality?: SharedQuality
+}
+
+export interface SharedQuality {
+  item: string
+  recipe?: string
+  base: string
+  target: string
+  /** What stands on each rung, by quality, and only where somebody has said. */
+  crafters: Record<string, SharedSide>
+  recyclers: Record<string, SharedSide>
+  by: string
+  machines: number
+  output: number
+}
+
+export interface SharedSide {
+  machine?: string
+  quality?: string
+  modules?: Array<{ name: string; quality?: string }>
 }
 
 interface Packed {
@@ -32,7 +55,14 @@ interface Packed {
   f?: Record<string, string>
   /** `[recipe, machine, quality, pin, modules, beacon]`, each falsy when unset. */
   n?: Array<[string, string?, string?, number?, PackedModule[]?, PackedBeacon?]>
+  /** `1` when the recycling tab was the one open. */
+  m?: number
+  /** `[item, recipe, base, target, by, machines, output, crafters, recyclers]`. */
+  q?: [string, string | undefined, string, string, string, number, number, PackedRungs, PackedRungs]
 }
+
+/** `[tier, machine, quality, modules]` for each rung anybody has said anything about. */
+type PackedRungs = Array<[string, string?, string?, PackedModule[]?]>
 
 /** `[name, quality]`. */
 type PackedModule = [string, string?]
@@ -67,6 +97,19 @@ export function encodePlan(plan: SharedPlan): string {
     ])
   }
 
+  if (plan.mode === 'recycling') packed.m = 1
+  if (plan.quality?.item) {
+    const rungs = (held: Record<string, SharedSide>): PackedRungs =>
+      Object.entries(held).map(([tier, side]) => [
+        tier,
+        side.machine,
+        side.quality,
+        side.modules?.map((module): PackedModule => [module.name, module.quality]),
+      ])
+    const q = plan.quality
+    packed.q = [q.item, q.recipe, q.base, q.target, q.by, q.machines, q.output, rungs(q.crafters), rungs(q.recyclers)]
+  }
+
   return toBase64Url(deflateRaw(JSON.stringify(packed), { level: 9 }))
 }
 
@@ -98,7 +141,38 @@ export function decodePlan(text: string): SharedPlan | undefined {
       if (Object.keys(node).length) nodes[recipe] = node
     }
 
+    const rungs = (from: PackedRungs | undefined): Record<string, SharedSide> => {
+      const held: Record<string, SharedSide> = {}
+      for (const [tier, machine, quality, modules] of from ?? []) {
+        const side: SharedSide = {}
+        if (machine) side.machine = machine
+        if (quality) side.quality = quality
+        if (modules?.length) side.modules = modules.map(([name, held]) => (held ? { name, quality: held } : { name }))
+        held[tier] = side
+      }
+      return held
+    }
+
+    // What was not packed does not come back: a plan with no recycling in it decodes to
+    // exactly the plan that went in, which is what makes the round trip worth testing.
+    const extra: Partial<SharedPlan> = {}
+    if (packed.m) extra.mode = 'recycling'
+    if (packed.q) {
+      extra.quality = {
+        item: packed.q[0],
+        recipe: packed.q[1] || undefined,
+        base: packed.q[2],
+        target: packed.q[3],
+        by: packed.q[4],
+        machines: packed.q[5],
+        output: packed.q[6],
+        crafters: rungs(packed.q[7]),
+        recyclers: rungs(packed.q[8]),
+      }
+    }
+
     return {
+      ...extra,
       version: packed.v,
       belt: typeof packed.b === 'string' ? packed.b : 'transport-belt',
       targets,

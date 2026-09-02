@@ -39,6 +39,19 @@ export {
 export { minimise, type LPSolution, type LPStatus } from './calc/simplex'
 export { decodePlan, encodePlan, type SharedPlan } from './calc/share'
 export {
+  loopRecipeFor,
+  planQuality,
+  recyclingOf,
+  spread,
+  type QualityDrive,
+  type QualityLoop,
+  type QualityPlan,
+  type QualitySetup,
+  type QualitySide,
+  type QualityTier,
+  type Recycling,
+} from './calc/quality'
+export {
   EMPTY_CONFIG,
   nodeKey,
   solve,

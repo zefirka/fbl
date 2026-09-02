@@ -152,6 +152,7 @@ button.x:hover { color: var(--error); }
   white-space: nowrap;
 }
 .flow-tag .chip { width: 16px; height: 16px; }
+.flow-tag .chip.mark { width: 10px; height: 10px; left: -2px; bottom: -2px; }
 
 /* ── Cards ────────────────────────────────────────────────────────────────── */
 
@@ -435,6 +436,9 @@ span.mini.flat { display: flex; align-items: center; gap: 6px; }
 .picker-tip span { color: var(--text-dim); font-family: var(--font-mono); font-size: 10px; }
 
 .stamped { position: relative; display: inline-flex; }
+/* `button.pick span` is more specific than a bare class, and it makes every span in the
+   button grow — including the one wrapping the icon, which pushes the label to the far end. */
+button.pick .stamped { flex: none; }
 .stamped .mark {
   position: absolute;
   left: -3px;
@@ -495,3 +499,59 @@ button.bus:hover { color: var(--accent); border-color: var(--line); }
   font-weight: 700;
   padding-left: 1px;
 }
+
+/* ── The two tabs ─────────────────────────────────────────────────────────── */
+
+#app { grid-template-rows: auto auto 1fr; }
+
+.tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 12px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--line);
+}
+.tabs button {
+  border: none;
+  border-radius: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--text-dim);
+  padding: 7px 14px 6px;
+  font-size: 12px;
+  letter-spacing: 0.03em;
+}
+.tabs button:hover { color: var(--text); }
+.tabs button.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+/* ── The recycling rail ───────────────────────────────────────────────────── */
+
+.pair { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.pair label { flex: none; width: 46px; font-size: 11px; color: var(--text-dim); }
+.pair input { width: 72px; padding: 3px 6px; text-align: right; font-family: var(--font-mono); }
+.pair input + label { flex: 1; width: auto; }
+/* "assemblers" does not fit the 46px the one-word labels above are sized to. */
+.pair.fill label { width: 62px; }
+
+.steps { display: flex; align-items: center; gap: 4px; margin-top: 6px; }
+.steps .step {
+  padding: 1px 7px;
+  font-size: 12px;
+  color: var(--text-dim);
+  background: transparent;
+}
+.steps .step:disabled { opacity: 0.3; cursor: default; }
+.steps-count { font-family: var(--font-mono); font-size: 12px; min-width: 12px; text-align: center; }
+.steps-of { font-size: 10px; color: #5d6673; }
+
+.segmented.wide { display: flex; width: 100%; }
+.segmented.wide button { flex: 1; }
+
+.totals.big { font-size: 13px; }
+.totals.big b { font-size: 17px; color: var(--accent); }
+
+/* ── The ladder's boxes ───────────────────────────────────────────────────── */
+
+.card.qcard { gap: 6px; }
+.card.qcard .card-foot { padding-top: 5px; }
+.card.qcard.recycler { border-left: 3px solid var(--warn); }

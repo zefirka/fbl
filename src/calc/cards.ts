@@ -1,4 +1,4 @@
-import type { ProtoRegistry, RecipeGraph, Solution, SolvedNode } from '../core'
+import type { Flow, ProtoRegistry, RecipeGraph, Solution, SolvedNode } from '../core'
 import { consumersOf, machinesRunning } from '../core'
 import { iconStyle, type IconSheet } from '../ui/icons'
 import type { CalcState } from './state'
@@ -240,4 +240,35 @@ function terminalRate(ctx: CardContext, card: CardModel): number {
   if (card.kind === 'input') return ctx.solution.inputs.get(card.id) ?? 0
   if (card.kind === 'surplus') return ctx.solution.surplus.get(card.id) ?? 0
   return ctx.state.targets.filter((t) => t.item === card.id).reduce((sum, t) => sum + t.rate, 0)
+}
+
+/**
+ * The machines behind one ribbon — written only where the source feeds more than one place.
+ * Where it feeds one, the share is the whole node and the card already says so.
+ */
+export function machineShare(
+  flow: Flow,
+  ctx: CardContext,
+  split: Map<string, { rate: number; ways: number }>,
+): { text: string; title: string } | undefined {
+  if (!flow.from.startsWith('recipe:')) return undefined
+
+  const held = split.get(`${flow.from}|${flow.item}`)
+  if (!held || held.ways < 2 || held.rate <= 0) return undefined
+
+  const node = ctx.solution.nodes.find((entry) => entry.recipe === flow.from.slice('recipe:'.length))
+  if (!node || node.machines <= 0) return undefined
+
+  // Apportioned out of the machines you would *build*, not out of the fraction the plan
+  // strictly needs, so the numbers along the ribbons add up to the number on the card.
+  const built = Math.ceil(node.machines - 1e-6)
+  const part = flow.rate / held.rate
+  const share = built * part
+  const shown = share >= 10 ? Math.round(share) : Number(share.toFixed(1))
+  const machine = node.machine ? labelOf(ctx.registry, node.machine).toLowerCase() : 'machines'
+
+  return {
+    text: `${shown}×`,
+    title: `${shown} of ${built} ${machine} — ${Math.round(part * 100)}% of what they make`,
+  }
 }

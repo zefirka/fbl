@@ -45,6 +45,12 @@ export interface DiagramModel {
   links: SankeyLink[]
   /** Every flow, by the key its ribbon is tagged with, for labels and hover. */
   flows: Map<string, Flow>
+  /**
+   * A quality to stamp on a flow's icon, by the same key. On a quality ladder every ribbon
+   * carries the same item and the icons are identical, so without this there is no telling
+   * which rung a flow came off.
+   */
+  marks?: Map<string, string>
 }
 
 export function diagramOf(solution: Solution, carrier: Carrier): DiagramModel {
@@ -89,13 +95,21 @@ export function diagramOf(solution: Solution, carrier: Carrier): DiagramModel {
   return { cards, nodes, links, flows }
 }
 
-/** 45.2/s, 0.83/s — enough digits to be worth reading, never more. */
-export function rateText(rate: number): string {
-  if (rate === 0) return '0/s'
-  if (rate >= 100) return `${Math.round(rate)}/s`
-  if (rate >= 10) return `${rate.toFixed(1).replace(/\.0$/, '')}/s`
-  if (rate >= 1) return `${rate.toFixed(2).replace(/0$/, '').replace(/\.$/, '')}/s`
-  return `${rate.toFixed(3).replace(/0+$/, '').replace(/\.$/, '')}/s`
+/**
+ * 45.2/s, 0.83/s — enough digits to be worth reading, never more.
+ *
+ * Farming quality is counted a minute rather than a second, because the whole point of it is
+ * that the numbers are small: three legendaries an hour reads as nothing at all per second.
+ */
+export function rateText(rate: number, per: 'second' | 'minute' = 'second'): string {
+  const value = per === 'minute' ? rate * 60 : rate
+  const unit = per === 'minute' ? '/min' : '/s'
+
+  if (value === 0) return `0${unit}`
+  if (value >= 100) return `${Math.round(value)}${unit}`
+  if (value >= 10) return `${value.toFixed(1).replace(/\.0$/, '')}${unit}`
+  if (value >= 1) return `${value.toFixed(2).replace(/0$/, '').replace(/\.$/, '')}${unit}`
+  return `${value.toFixed(3).replace(/0+$/, '').replace(/\.$/, '')}${unit}`
 }
 
 /** "1.4 belts", "0.3 pipes" — what carrying this flow actually costs. */

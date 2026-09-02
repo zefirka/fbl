@@ -105,11 +105,14 @@ export function itemOptions(registry: ProtoRegistry): PickerOption[] {
  * applied to — a machine gets faster, a module gets stronger — so the detail says which.
  */
 export function qualityOptions(registry: ProtoRegistry, of: 'machine' | 'module'): PickerOption[] {
-  return registry.qualities.map((id) => ({
+  return registry.qualities.map((id, at) => ({
     id,
     label: id.replace(/^./, (c) => c.toUpperCase()),
     detail: id === 'normal' ? 'as built' : of === 'machine' ? 'a faster machine' : 'a stronger module',
     icon: registry.icons.get(id),
+    // Tiers have an order and it is not alphabetical; without this the list reads
+    // Epic, Legendary, Normal, Rare, Uncommon.
+    row: at,
   }))
 }
 

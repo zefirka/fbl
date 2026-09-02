@@ -1,4 +1,7 @@
-# The calculator
+# The calculator — production
+
+The calculator has two tabs, and this file is about the first. The second farms quality through
+a loop of recyclers and is written up in **[recycling.md](recycling.md)**.
 
 A second page — `calc.html`, linked from the toolbar — that answers the other half of the
 question. You say what you want a second; it works out every recipe behind it, how many
@@ -68,6 +71,10 @@ Which recipes are on the table stays yours. The solver decides how fast, never w
 nothing turns up in a plan because an optimiser found it cheap. Two whole classes are off the
 table before that: recycling and barrelling, because 43 recipes produce an iron plate and 41 of
 them are shredding something back into one; and everything nothing can be *built* to run.
+
+Leaving recycling out has a price worth naming: Fulgora's scrap is not a source here, so
+holmium ore is something a plan starts with rather than something it makes. Shredding is
+modelled properly on the other tab; this one does not use it to produce anything.
 Space Age carries recipes for what happens on its own — food spoiling, bacteria multiplying
 into ore in a crate — and those have no machine at all. Left in, they cost nothing to build,
 and a plan asked for a locomotive answers with six thousand biochambers growing iron out of

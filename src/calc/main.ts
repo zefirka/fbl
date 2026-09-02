@@ -1,4 +1,15 @@
-import { ProtoRegistry, consumersOf, recipeGraph, solve, type Solution } from '../core'
+import {
+  ProtoRegistry,
+  bestMachine,
+  consumersOf,
+  loopRecipeFor,
+  planQuality,
+  recipeGraph,
+  solve,
+  type QualityPlan,
+  type QualitySetup,
+  type Solution,
+} from '../core'
 import { loadDataset } from '../data/loader'
 import { fetchBytes } from '../data/progress'
 import { DEFAULT_VERSION, VERSIONS, versionById } from '../data/versions'
@@ -7,12 +18,15 @@ import type { SankeyLayout } from '../ui/sankey'
 import '../ui/base.css'
 import './style.css'
 
-import type { CardContext } from './cards'
+import { cardHtml, machineShare, type CardContext } from './cards'
 import { bindZoomPan, clamp, drawDiagram, fitView, type DiagramRefs, type DiagramView } from './diagram'
+import { perMinute, qualityCard, qualityDiagram, type QualityContext } from './quality-view'
+import { qualityRailHtml } from './quality-rail'
 import { railHtml, type RailContext } from './rail'
+import { labelOf as labelOfItem } from './view'
 import { beltOptions, itemOptions, machineOptions, moduleOptions, qualityOptions, recipeOptions } from './options'
 import { openPicker, type PickerOption } from './picker'
-import { emptyState, readLink, readState, setNode, settingsOf, writeLink, writeState, type CalcState } from './state'
+import { emptyState, readLink, readState, rungOf, setNode, setRung, settingsOf, writeLink, writeState, type CalcState } from './state'
 import { diagramOf, type Carrier } from './view'
 
 /**
@@ -43,6 +57,7 @@ const dom = {
   fit: el<HTMLButtonElement>('fit'),
   share: el<HTMLButtonElement>('share'),
   zoom: el('zoom'),
+  tabs: el('tabs'),
   loading: el('loading'),
 }
 
@@ -52,6 +67,9 @@ let state: CalcState = readLink(DEFAULT_VERSION.id) ?? readState(DEFAULT_VERSION
 let registry: ProtoRegistry | null = null
 let sheet: IconSheet | null = null
 let solution: Solution | null = null
+/** Kept so the pickers can read the ladder back without solving it again. */
+let quality: QualityPlan | null = null
+void quality
 let layout: SankeyLayout | null = null
 /** Bumped on every dataset load so a slow one cannot clobber a newer one. */
 let generation = 0
@@ -80,6 +98,11 @@ function carrierOf(reg: ProtoRegistry): Carrier {
 
 function rebuild(refit = false): void {
   if (!registry) return
+  for (const button of dom.tabs.querySelectorAll<HTMLElement>('[data-mode]')) {
+    button.classList.toggle('active', button.dataset.mode === state.mode)
+  }
+  if (state.mode === 'recycling') return rebuildQuality(registry, refit)
+
   const graph = recipeGraph(registry)
   solution = solve(registry, state)
 
@@ -88,7 +111,13 @@ function rebuild(refit = false): void {
   const ctx: CardContext = { registry, graph, sheet, state, carrier, solution }
 
   dom.empty.hidden = model.cards.length > 0
-  layout = drawDiagram(refs, model, ctx)
+  layout = drawDiagram(refs, model, {
+    registry,
+    sheet,
+    carrier,
+    card: (card) => cardHtml(card, ctx),
+    note: (flow, split) => machineShare(flow, ctx, split),
+  })
 
   const rail: RailContext = { registry, sheet, state, solution, carrier }
   dom.rail.innerHTML = railHtml(rail)
@@ -97,6 +126,49 @@ function rebuild(refit = false): void {
   dom.stats.textContent = solution.nodes.length
     ? `${solution.nodes.length} recipes · ${machines} machines${solution.shortfalls.length ? ` · ${solution.shortfalls.length} short` : ''}`
     : ''
+
+  writeState(state)
+  ourLink = writeLink(state)
+  if (refit && layout) applyView(fitView(refs, layout, view))
+}
+
+function rebuildQuality(reg: ProtoRegistry, refit: boolean): void {
+  const held = state.quality
+  const recipe = ladderRecipe(reg) ?? ''
+
+  const setup: QualitySetup = {
+    recipe,
+    item: held.item || undefined,
+    base: held.base,
+    target: held.target,
+    crafters: held.crafters,
+    recyclers: held.recyclers,
+  }
+
+  const plan = planQuality(reg, setup, held.by === 'machines' ? { machines: held.machines } : { output: held.output / 60 })
+  quality = plan
+  solution = null
+
+  const item = held.item || Object.keys(reg.recipes.get(recipe)?.out ?? {})[0] || ''
+  const carrier = carrierOf(reg)
+  const ctx: QualityContext = { registry: reg, sheet, carrier, setup, plan, item }
+  const model = held.item && !plan.problem ? qualityDiagram(ctx) : { cards: [], nodes: [], links: [], flows: new Map() }
+
+  dom.empty.hidden = model.cards.length > 0
+  layout = drawDiagram(
+    refs,
+    model,
+    { registry: reg, sheet, carrier, card: (card) => qualityCard(card, ctx), rate: perMinute },
+    // The rungs are narrow boxes in fixed columns, so they can sit closer together.
+    { nodeWidth: 176, columnGap: 120 },
+  )
+  dom.rail.innerHTML = qualityRailHtml({ registry: reg, sheet, settings: held, plan, item })
+
+  dom.stats.textContent = plan.problem
+    ? ''
+    : plan.output > 0
+      ? `${(plan.output * 60).toFixed(1)} ${held.target} a minute`
+      : ''
 
   writeState(state)
   ourLink = writeLink(state)
@@ -180,12 +252,13 @@ function openFor(button: HTMLElement): void {
         sheet: sheet_,
         clear: { label: 'empty the slot' },
         everySlot: { label: 'every slot', on: everySlot, onToggle: (on) => (everySlot = on) },
-        quality: tiers('module', moduleQuality, (quality) => {
+        // The tier of what is in *this* slot, not a setting of the machine: one legendary
+        // productivity module beside three ordinary ones is a real thing to build. A slot with
+        // a module in it shows that module's tier — an ordinary one is ordinary, not whatever
+        // was picked last — and only an empty slot offers the tier the next one would take.
+        quality: tiers('module', slot ? (slot.quality ?? 'normal') : moduleQuality, (quality) => {
           moduleQuality = quality
-          // Re-stamp whatever is already in the machine, which is what was being asked.
-          const held = settingsOf(state, id).modules
-          if (held?.length) setNode(state, id, { modules: held.map((m) => ({ ...m, quality: tierOf(quality) })) })
-          rebuild()
+          stampQuality(id, at, quality)
         }),
         onPick: (module) => setModule(id, at, module),
       })
@@ -230,6 +303,122 @@ function openFor(button: HTMLElement): void {
         rebuild()
       })
 
+    case 'quality-item':
+      return show('What are you farming', itemOptions(reg), state.quality.item, (item) => {
+        if (!item) return
+        // A different item is a different recipe and different machines, so what was said
+        // about the old one's rungs goes with it.
+        state.quality = { ...state.quality, item, recipe: undefined, crafters: {}, recyclers: {} }
+        rebuild(true)
+      })
+
+    case 'quality-base':
+    case 'quality-target': {
+      const which = kind === 'quality-base' ? 'base' : 'target'
+      return show(
+        which === 'base' ? 'Ingredients start at' : 'Farming for',
+        qualityOptions(reg, 'machine'),
+        state.quality[which],
+        (tier) => {
+          if (!tier) return
+          state.quality = { ...state.quality, [which]: tier }
+          rebuild()
+        },
+      )
+    }
+
+    // ── One rung of the ladder ──────────────────────────────────────────────
+    // `data-for` is the tier; which side it is comes from the kind. Every rung is settled on
+    // its own card, which is where you are looking when you want to change it.
+    case 'rung-machine': {
+      const rung = rungOf(state.quality.crafters, id)
+      const recipe = ladderRecipe(reg)
+      const known = recipe ? reg.recipes.get(recipe) : undefined
+      if (!known) return
+
+      return openPicker(button, {
+        title: `The ${id} assemblers`,
+        options: machineOptions(reg, known),
+        chosen: rung.machine ?? bestMachine(reg, known),
+        sheet: sheet_,
+        quality: tiers('machine', rung.quality ?? 'normal', (tier) => {
+          setRung(state.quality.crafters, id, { quality: tier === 'normal' ? undefined : tier })
+          rebuild()
+        }),
+        onPick: (machine) => {
+          // A different machine has different slots, so what was in the old ones cannot stand.
+          setRung(state.quality.crafters, id, { machine: machine ?? undefined, modules: undefined })
+          rebuild()
+        },
+      })
+    }
+
+    case 'rung-recycler': {
+      const rung = rungOf(state.quality.recyclers, id)
+      return openPicker(button, {
+        title: `The ${id} recyclers`,
+        options: [
+          {
+            id: 'recycler',
+            label: labelOfItem(reg, 'recycler'),
+            detail: 'the only thing that shreds',
+            icon: reg.icons.get('recycler'),
+          },
+        ],
+        chosen: 'recycler',
+        sheet: sheet_,
+        quality: tiers('machine', rung.quality ?? 'normal', (tier) => {
+          setRung(state.quality.recyclers, id, { quality: tier === 'normal' ? undefined : tier })
+          rebuild()
+        }),
+        onPick: () => rebuild(),
+      })
+    }
+
+    // ── Every rung at once ───────────────────────────────────────────────────
+    // Nine machines with the same four modules in them is what a ladder nearly always is, and
+    // filling them one slot at a time is thirty-six clicks to say one thing.
+    case 'rung-fill': {
+      const side = id === 'recyclers' ? 'recyclers' : 'crafters'
+      const held = heldEverywhere(side)
+
+      return openPicker(button, {
+        title: side === 'recyclers' ? 'Every recycler' : 'Every assembler',
+        options: moduleOptions(reg),
+        chosen: held?.name,
+        sheet: sheet_,
+        clear: { label: 'empty them all' },
+        quality: tiers('module', held?.quality ?? moduleQuality, (tier) => {
+          moduleQuality = tier
+          // Re-tier what is already in them, so the tier reads as a property of the modules
+          // rather than of the next click.
+          if (held?.name) fillRungs(side, held.name, tier)
+        }),
+        onPick: (module) => fillRungs(side, module, moduleQuality),
+      })
+    }
+
+    case 'rung-module': {
+      const side = button.dataset.side === 'recycler' ? 'recyclers' : 'crafters'
+      const at = Number(button.dataset.slot ?? 0)
+      const rung = rungOf(state.quality[side], id)
+      const slot = rung.modules?.[at]
+
+      return openPicker(button, {
+        title: 'Modules',
+        options: moduleOptions(reg),
+        chosen: slot?.name,
+        sheet: sheet_,
+        clear: { label: 'empty the slot' },
+        everySlot: { label: 'every slot', on: everySlot, onToggle: (on) => (everySlot = on) },
+        quality: tiers('module', slot ? (slot.quality ?? 'normal') : moduleQuality, (tier) => {
+          moduleQuality = tier
+          stampRung(side, id, at, tier)
+        }),
+        onPick: (module) => setRungModule(side, id, at, module),
+      })
+    }
+
     case 'use':
       return show(
         'What to do with it',
@@ -245,12 +434,130 @@ function openFor(button: HTMLElement): void {
   }
 }
 
+/** How many module slots a rung's machine has. */
+function rungSlots(side: 'crafters' | 'recyclers', tier: string): number {
+  const rung = rungOf(state.quality[side], tier)
+  const machine = side === 'recyclers' ? 'recycler' : (rung.machine ?? defaultCrafter())
+  return machine ? (registry?.machines.get(machine)?.modules ?? 0) : 0
+}
+
+/**
+ * The recipe the ladder runs on.
+ *
+ * Not the one a factory would be built with: what closes the loop is the recipe a recycler
+ * reverses. Shredding nutrients hands back spoilage, so the ladder is built on the recipe made
+ * *from* spoilage, whichever one is cheapest to run.
+ */
+function ladderRecipe(reg: ProtoRegistry): string | undefined {
+  const held = state.quality
+  if (held.recipe) return held.recipe
+  if (!held.item) return undefined
+  return loopRecipeFor(reg, held.item) ?? recipeGraph(reg).producers.get(held.item)?.[0]
+}
+
+/** The machine a rung runs when nobody has said otherwise: the best one for the recipe. */
+function defaultCrafter(): string | undefined {
+  if (!registry) return undefined
+  const recipe = ladderRecipe(registry)
+  const known = recipe ? registry.recipes.get(recipe) : undefined
+  return known ? bestMachine(registry, known) : undefined
+}
+
+function setRungModule(side: 'crafters' | 'recyclers', tier: string, at: number, module: string | null): void {
+  const slots = rungSlots(side, tier)
+  const held = [...(rungOf(state.quality[side], tier).modules ?? [])]
+
+  if (everySlot) {
+    setRung(state.quality[side], tier, {
+      modules: module ? Array.from({ length: slots }, () => ({ name: module, quality: tierOf(moduleQuality) })) : undefined,
+    })
+    return rebuild()
+  }
+
+  held.length = slots
+  held[at] = module ? { name: module, quality: tierOf(moduleQuality) } : (undefined as never)
+  const kept = held.filter(Boolean)
+  setRung(state.quality[side], tier, { modules: kept.length ? kept : undefined })
+  rebuild()
+}
+
+/**
+ * What every rung on one side holds, when they all hold the same thing — and nothing when they
+ * differ, because there is no one module to show for a mixed ladder.
+ */
+function heldEverywhere(side: 'crafters' | 'recyclers'): { name: string; quality?: string } | undefined {
+  const tiers = registry?.qualities ?? []
+  let same: { name: string; quality?: string } | undefined
+
+  for (const tier of tiers) {
+    const slots = rungSlots(side, tier)
+    if (slots === 0) continue
+
+    const modules = rungOf(state.quality[side], tier).modules ?? []
+    if (modules.length !== slots) return undefined
+
+    for (const module of modules) {
+      if (!same) same = { name: module.name, quality: module.quality }
+      else if (same.name !== module.name || same.quality !== module.quality) return undefined
+    }
+  }
+  return same
+}
+
+/** The same module in every slot of every rung, which is the setup people actually build. */
+function fillRungs(side: 'crafters' | 'recyclers', module: string | null, quality: string): void {
+  for (const tier of registry?.qualities ?? []) {
+    const slots = rungSlots(side, tier)
+    setRung(state.quality[side], tier, {
+      modules:
+        module && slots > 0
+          ? Array.from({ length: slots }, () => ({ name: module, quality: tierOf(quality) }))
+          : undefined,
+    })
+  }
+  rebuild()
+}
+
+function stampRung(side: 'crafters' | 'recyclers', tier: string, at: number, quality: string): void {
+  const held = rungOf(state.quality[side], tier).modules
+  if (!held?.length) return
+
+  const built = tierOf(quality)
+  setRung(state.quality[side], tier, {
+    modules: everySlot
+      ? held.map((module) => ({ ...module, quality: built }))
+      : held.map((module, slot) => (slot === at ? { ...module, quality: built } : module)),
+  })
+  rebuild()
+}
+
 /** Whether picking a module fills the machine or only the slot that was clicked. */
 let everySlot = true
 /** The tier new modules are built to, until it is changed again. */
 let moduleQuality = 'normal'
 
 const tierOf = (quality: string) => (quality === 'normal' ? undefined : quality)
+
+/**
+ * Re-tiers what is already in the machine — every slot, or the one that was clicked.
+ *
+ * The toggle governs this as much as it governs which module: it says whether a choice made
+ * here is about the machine or about the slot, and quality is a choice like any other. It used
+ * to re-stamp everything whatever the toggle said, which made a mixed loadout impossible to
+ * express.
+ */
+function stampQuality(recipe: string, at: number, quality: string): void {
+  const held = settingsOf(state, recipe).modules
+  if (!held?.length) return
+
+  const tier = tierOf(quality)
+  setNode(state, recipe, {
+    modules: everySlot
+      ? held.map((module) => ({ ...module, quality: tier }))
+      : held.map((module, slot) => (slot === at ? { ...module, quality: tier } : module)),
+  })
+  rebuild()
+}
 
 function setModule(recipe: string, at: number, module: string | null): void {
   const slots = registry?.machines.get(solution?.nodes.find((n) => n.recipe === recipe)?.machine ?? '')?.modules ?? 0
@@ -279,6 +586,13 @@ document.addEventListener('click', (event) => {
 
 dom.rail.addEventListener('change', (event) => {
   const target = event.target as HTMLElement
+
+  if (target.id === 'quality-drive') {
+    const value = Math.max(0, Number((target as HTMLInputElement).value))
+    state.quality = { ...state.quality, [state.quality.by === 'machines' ? 'machines' : 'output']: value }
+    return rebuild()
+  }
+
   const at = target.closest<HTMLElement>('[data-target-rate]')?.dataset.targetRate
   if (at === undefined) return
 
@@ -293,6 +607,17 @@ dom.rail.addEventListener('click', (event) => {
   const drop = target.closest<HTMLElement>('[data-target-drop]')?.dataset.targetDrop
   if (drop !== undefined) {
     state.targets = state.targets.filter((_, i) => i !== Number(drop))
+    return rebuild()
+  }
+
+  const by = target.closest<HTMLElement>('[data-quality-by]')?.dataset.qualityBy
+  if (by === 'machines' || by === 'output') {
+    state.quality = { ...state.quality, by }
+    return rebuild()
+  }
+
+  const step = target.closest<HTMLElement>('[data-quality-count]')
+  if (step?.dataset.qualityCount) {
     return rebuild()
   }
 
@@ -353,6 +678,13 @@ function beaconModules() {
     .sort((a, b) => (registry!.moduleEffects.get(b)!.speed ?? 0) - (registry!.moduleEffects.get(a)!.speed ?? 0))[0]
   return best ? Array.from({ length: slots }, () => ({ name: best })) : []
 }
+
+dom.tabs.addEventListener('click', (event) => {
+  const mode = (event.target as HTMLElement).closest<HTMLElement>('[data-mode]')?.dataset.mode
+  if (!mode || mode === state.mode) return
+  state.mode = mode as CalcState['mode']
+  rebuild(true)
+})
 
 dom.zoom.addEventListener('click', (event) => {
   const how = (event.target as HTMLElement).dataset.zoom

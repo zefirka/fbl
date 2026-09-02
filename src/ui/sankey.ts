@@ -27,6 +27,12 @@ export interface SankeyNode {
   weight: number
   /** Kept clear of the packing, so a box with controls in it still fits. */
   minHeight?: number
+  /**
+   * Which column to stand in, when the caller knows better than the graph does. A quality
+   * ladder is five rungs whatever its flows look like, and reading the columns off the longest
+   * path would string it out into a line one box wide.
+   */
+  column?: number
 }
 
 export interface SankeyLink {
@@ -105,6 +111,7 @@ export function layoutSankey(
   const live = links.filter((link) => index.has(link.from) && index.has(link.to) && link.from !== link.to)
 
   const columns = columnsOf(nodes, live)
+  for (const node of nodes) if (node.column !== undefined) columns.set(node.key, node.column)
   const thickness = (weight: number) => Math.max(o.minThickness, weight * o.scale)
 
   // ── Crossings get a box of their own ────────────────────────────────────────

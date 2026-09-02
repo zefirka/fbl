@@ -13,7 +13,7 @@
  * locally, and kept out of git — same policy as the icon sheets.
  */
 
-import { existsSync } from 'node:fs'
+import { copyFileSync, existsSync } from 'node:fs'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -887,6 +887,15 @@ await writeFile(
 
 function round(n) {
   return Math.round(n * 10000) / 10000
+}
+
+// The game's own icon, for the browser tab. One 128px file rather than the sheet of every
+// item — the tab needs a face, and it comes from the same install as everything else here, so
+// re-running the extractor keeps it honest instead of leaving it a blob nobody can re-derive.
+const iconSource = join(dataDir, 'core/graphics/factorio-icon@2x.png')
+if (existsSync(iconSource)) {
+  copyFileSync(iconSource, join(ROOT, 'public/favicon.png'))
+  console.log('favicon → public/favicon.png')
 }
 
 console.log(`atlas ${(png.length / 1024 / 1024).toFixed(1)}MB → public/sprites/atlas.png`)

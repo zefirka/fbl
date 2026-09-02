@@ -31,6 +31,10 @@ What to know before trusting it with a real base:
   could come back as AST macros, but nothing depends on that today.
 - **No circuit wires, no rails, no fluids beyond placing pipes.** No automatic belt routing —
   `via` corners are yours to choose.
+- **The production tab cannot recycle.** Recycling recipes are left out of the graph a factory
+  is planned from, so a plan never says "shred fifteen scrap a second for that". On Fulgora,
+  where scrap is the whole economy, holmium ore is an input rather than something to make. The
+  recycling *tab* models shredding properly; the production one does not use it as a source.
 - **The checker does not track throughput.** The arithmetic exists — the studio's rates panel
   and the calculator both use it — but nothing in the checker warns that a belt cannot carry
   what is being put on it.
