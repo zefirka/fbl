@@ -90,6 +90,18 @@ not: it drew sulfuric acid coming *out* of a recycler, and undercounted what the
 buys by 59%, because a leaked fluid is bought again by every rung rather than once at the bottom.
 `recyclingOf` in `src/core/calc/quality.ts` reads it; [recycling.md](recycling.md) has the rest.
 
+### An icon is a window, so the window has to be the right size
+
+Item icons come as one sheet with a 64-pixel icon on a 66-pixel grid, and a chip shows one by
+scaling the **whole sheet** until a single cell lands exactly on the element. That makes the
+box and the crop one measurement: an element 11 pixels wide showing a sheet scaled for 10 will
+show a tenth of the icons either side of it, and in a game where every quality tier is a small
+coloured pip, that reads as an item wearing three tiers at once.
+
+It happened exactly that way, so `iconStyle` now writes the width and height along with the
+background instead of leaving them to a class. The class rules that remain are for chips with
+no icon to show — an empty module slot is a dashed box of the right size.
+
 ### Some recipes have no machine at all
 
 Space Age carries recipes for what happens **on its own**: food spoiling, bacteria multiplying

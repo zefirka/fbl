@@ -120,6 +120,18 @@ what is comparable — and what you are about to go and build — is how much ca
 takes. Rates are still what the labels say, and since the width *is* belts, a thick ribbon is
 ruled with a hairline on every belt boundary: you can count them.
 
+**A belt is not only its tier.** Space Age put stacks on belts: a stack inserter piles two items
+on a tile, and the two transport-belt capacity researches take that to three and four. The same
+express belt therefore carries 45 or 180 items a second depending on what has been researched,
+and a plan that ignores it asks for four times the belts it needs. So *Counted in* has a
+stacking level beside the belt, and names the research each level costs rather than leaving it
+as a number.
+
+The cap is the item's own stack size. Something that does not stack in an inventory does not
+stack on a belt either — a stack inserter picks up one asteroid chunk and puts down one — so an
+asteroid chunk is one to a tile however much has been researched. That rule lives in
+`capacityFor` (`src/core/calc/carrier.ts`) with the rest of the arithmetic, not in the panel.
+
 The scale has a ceiling rather than a fixed pixels-per-belt, the way Kirk McDonald's calculator
 caps its node height. Without one the diagram is at the mercy of its largest number — 337 iron
 plates a second is twenty-two yellow belts, and at any honest scale that is a ribbon wider than

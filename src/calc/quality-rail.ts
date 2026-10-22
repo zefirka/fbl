@@ -32,7 +32,7 @@ const named = (tier: string) => tier.replace(/^./, (c) => c.toUpperCase())
 /** An icon with its tier stamped on it, the way the cards stamp theirs. */
 function stamped(ctx: QualityRailContext, item: string, tier: string, px = 18): string {
   if (tier === 'normal') return chip(ctx, item, px)
-  const mark = iconStyle(ctx.registry.icons.get(tier), ctx.sheet, 10)
+  const mark = iconStyle(ctx.registry.icons.get(tier), ctx.sheet, 11)
   return `<span class="stamped">${chip(ctx, item, px)}<i class="chip mark" style="${mark}"></i></span>`
 }
 

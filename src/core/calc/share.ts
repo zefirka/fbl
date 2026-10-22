@@ -20,6 +20,11 @@ export interface SharedPlan extends CalcConfig {
   version: string
   /** The belt the widths and counts are reckoned in. */
   belt: string
+  /**
+   * How high a stack inserter is piling items on it: 1 to 4, and 1 when nothing is stacking.
+   * Absent in a plan shared before this existed, which reads as the old behaviour.
+   */
+  stack?: number
   /** Which tab was open, so a link opens on what was being shown. */
   mode?: string
   /** The recycling tab's setup, when there is one worth carrying. */
@@ -48,6 +53,8 @@ export interface SharedSide {
 interface Packed {
   v: string
   b: string
+  /** Belt stack size, when something is stacking. */
+  s?: number
   /** `[item, rate]`. */
   t: Array<[string, number]>
   c?: Record<string, string>
@@ -71,6 +78,8 @@ type PackedBeacon = [string, number, string?, PackedModule[]?]
 
 export function encodePlan(plan: SharedPlan): string {
   const packed: Packed = { v: plan.version, b: plan.belt, t: plan.targets.map((t) => [t.item, t.rate]) }
+  // One is what a belt does on its own, so it is not worth a letter in the link.
+  if (plan.stack && plan.stack > 1) packed.s = plan.stack
 
   if (Object.keys(plan.choice).length) packed.c = plan.choice
   if (Object.keys(plan.extra).length) packed.e = plan.extra
@@ -157,6 +166,7 @@ export function decodePlan(text: string): SharedPlan | undefined {
     // exactly the plan that went in, which is what makes the round trip worth testing.
     const extra: Partial<SharedPlan> = {}
     if (packed.m) extra.mode = 'recycling'
+    if (typeof packed.s === 'number') extra.stack = packed.s
     if (packed.q) {
       extra.quality = {
         item: packed.q[0],

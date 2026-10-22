@@ -45,6 +45,7 @@ export {
   type Effects,
   type Throughput,
 } from './calc/machine'
+export { capacityFor, PIPE_THROUGHPUT, type Carrier } from './calc/carrier'
 export { minimise, type LPSolution, type LPStatus } from './calc/simplex'
 export { decodePlan, encodePlan, type SharedPlan } from './calc/share'
 export {

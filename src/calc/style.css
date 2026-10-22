@@ -332,6 +332,10 @@ span.mini.flat { display: flex; align-items: center; gap: 6px; }
 .steps-count { font-family: var(--font-mono); font-size: 12px; min-width: 12px; text-align: center; }
 .steps-of { font-size: 10px; color: #5d6673; }
 
+/* The stack level sits beside its label, so it takes what is left rather than the whole rail. */
+.pair.stacking .segmented { flex: 1; display: flex; }
+.pair.stacking .segmented button { flex: 1; font-family: var(--font-mono); }
+
 .segmented.wide { display: flex; width: 100%; }
 .segmented.wide button { flex: 1; }
 

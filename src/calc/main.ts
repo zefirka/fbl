@@ -92,7 +92,11 @@ state.view = view
 function carrierOf(reg: ProtoRegistry): Carrier {
   return {
     belt: reg.entities.get(state.belt)?.beltSpeed ?? 15,
+    stack: state.stack ?? 1,
     isFluid: (item) => reg.fluids.has(item),
+    // An item the data gives no stack size to is one of a kind by definition, so it does not
+    // pile — the same answer as a stack size of one, and it keeps the arithmetic honest.
+    stackOf: (item) => reg.itemStacks.get(item) ?? 1,
   }
 }
 
@@ -607,6 +611,12 @@ dom.rail.addEventListener('click', (event) => {
   const drop = target.closest<HTMLElement>('[data-target-drop]')?.dataset.targetDrop
   if (drop !== undefined) {
     state.targets = state.targets.filter((_, i) => i !== Number(drop))
+    return rebuild()
+  }
+
+  const stack = target.closest<HTMLElement>('[data-stack]')?.dataset.stack
+  if (stack !== undefined) {
+    state.stack = Number(stack)
     return rebuild()
   }
 

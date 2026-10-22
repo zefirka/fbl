@@ -73,6 +73,13 @@ export class ProtoRegistry {
   readonly qualities: string[]
   readonly modules = new Set<string>()
   readonly itemLabels = new Map<string, string>()
+  /**
+   * How many of an item go in one inventory slot, where the data says.
+   *
+   * It decides more than inventories: an item that does not stack does not stack on a belt
+   * either, so this is the ceiling on what a stack inserter can pile onto one tile.
+   */
+  readonly itemStacks = new Map<string, number>()
   /** Fluids move by pipe, not by belt, which is what makes a machine grow one. */
   readonly fluids = new Set<string>()
   /** Crafting machines, for working out what a blueprint eats and makes. */
@@ -92,6 +99,7 @@ export class ProtoRegistry {
 
     for (const item of dataset.items) {
       this.itemLabels.set(item.id, item.name)
+      if (item.stack) this.itemStacks.set(item.id, item.stack)
       if (item.module) this.modules.add(item.id)
       if (item.category === 'fluids') this.fluids.add(item.id)
       if (item.machine) this.machines.set(item.id, item.machine)

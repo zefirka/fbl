@@ -42,9 +42,42 @@ export function railHtml(ctx: RailContext): string {
       <button type="button" class="pick wide" data-pick-open="belt" data-for="belt">
         ${chip(ctx, ctx.state.belt)}<span>${escape(labelOf(ctx.registry, ctx.state.belt))}</span>
       </button>
+      ${stackRow(ctx)}
       <p class="hint">ribbon width is how many belts a flow takes; fluids count in pipes</p>
       <button type="button" class="ghost wide" id="reset">start over</button>
     </section>`
+}
+
+/**
+ * How high the belts are stacked, which is a research question rather than a belt one.
+ *
+ * A stack inserter piles two items on a tile, and the two transport-belt capacity researches
+ * take that to three and four — so the same blue belt carries 45 or 180 a second depending on
+ * what has been researched, and a plan that ignores it over-counts belts fourfold.
+ */
+function stackRow(ctx: RailContext): string {
+  const stack = ctx.state.stack ?? 1
+  const belt = ctx.registry.entities.get(ctx.state.belt)?.beltSpeed ?? 15
+
+  const step = (level: number) => `
+    <button type="button" data-stack="${level}" class="${level === stack ? 'active' : ''}"
+            title="${escape(STACK_WHY[level])}">${level}×</button>`
+
+  return `
+    <div class="pair stacking">
+      <label>stacked</label>
+      <div class="segmented">${[1, 2, 3, 4].map(step).join('')}</div>
+    </div>
+    <p class="hint">${escape(STACK_WHY[stack])} — ${belt * stack}/s a belt, where the item
+      stacks that high at all</p>`
+}
+
+/** What each level costs in research, said where the choice is made. */
+const STACK_WHY: Record<number, string> = {
+  1: 'no stacking',
+  2: 'stack inserter',
+  3: '+ transport belt capacity 1',
+  4: '+ transport belt capacity 2',
 }
 
 function targetRow(ctx: RailContext, item: string, rate: number, index: number): string {

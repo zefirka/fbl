@@ -1,6 +1,6 @@
 import type { ProtoRegistry } from '../core'
 import type { Flow, Solution } from '../core'
-import { nodeKey } from '../core'
+import { capacityFor, nodeKey, type Carrier } from '../core'
 import type { SankeyLink, SankeyNode } from '../ui/sankey'
 
 /**
@@ -16,17 +16,7 @@ import type { SankeyLink, SankeyNode } from '../ui/sankey'
  * Rates are still what the labels say. The width is for the eye; the number is for the plan.
  */
 
-/** A pipe carries about this much a second over the short runs a factory is made of. */
-export const PIPE_THROUGHPUT = 1000
-
-export interface Carrier {
-  /** Items a second one belt of the chosen tier holds. */
-  belt: number
-  isFluid: (item: string) => boolean
-}
-
-export const capacityFor = (carrier: Carrier, item: string) =>
-  carrier.isFluid(item) ? PIPE_THROUGHPUT : carrier.belt
+export { capacityFor, PIPE_THROUGHPUT, type Carrier } from '../core'
 
 export type TerminalKind = 'input' | 'output' | 'surplus'
 

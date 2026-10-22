@@ -92,6 +92,7 @@ export function emptyState(version: string): CalcState {
     frontier: {},
     nodes: {},
     belt: 'transport-belt',
+    stack: 1,
     view: { x: 0, y: 0, scale: 1 },
   }
 }

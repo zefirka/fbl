@@ -4,7 +4,15 @@ import { dirname, join } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
-import { EMPTY_CONFIG, ProtoRegistry, isFrontier, minimise, recipeGraph, solve } from '../dist-node/core.mjs'
+import {
+  EMPTY_CONFIG,
+  ProtoRegistry,
+  capacityFor,
+  isFrontier,
+  minimise,
+  recipeGraph,
+  solve,
+} from '../dist-node/core.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const SPA = { id: '2x1', label: 'Space Age 2.1', directionScale: 2, moduleFormat: 'items-array', supportsQuality: true }
@@ -359,6 +367,39 @@ test('everything castable is offered, and the plain way stays the default', () =
 // ── Sharing ───────────────────────────────────────────────────────────────────
 
 import { decodePlan, encodePlan } from '../dist-node/core.mjs'
+
+test('a stacked belt carries as many as it is piled, and no more than the item stacks', () => {
+  const carrier = {
+    belt: 45,
+    stack: 4,
+    isFluid: (item) => registry.fluids.has(item),
+    stackOf: (item) => registry.itemStacks.get(item) ?? 1,
+  }
+
+  // Four high on an express belt is the headline number: 45 a second becomes 180.
+  assert.equal(capacityFor(carrier, 'iron-plate'), 180)
+  assert.equal(capacityFor({ ...carrier, stack: 1 }, 'iron-plate'), 45)
+  assert.equal(capacityFor({ ...carrier, stack: 2 }, 'iron-plate'), 90)
+
+  // An item that does not stack in an inventory does not stack on a belt either: a stack
+  // inserter picks up one asteroid chunk and puts down one.
+  assert.equal(registry.itemStacks.get('metallic-asteroid-chunk'), 1)
+  assert.equal(capacityFor(carrier, 'metallic-asteroid-chunk'), 45)
+
+  // Fluids are not on belts at all, so none of this touches them.
+  assert.equal(capacityFor(carrier, 'water'), capacityFor({ ...carrier, stack: 1 }, 'water'))
+})
+
+test('the stack level travels in a link, and only when there is one', () => {
+  const plain = { version: '2x1', belt: 'express-transport-belt', targets: [{ item: 'coal', rate: 1 }], choice: {}, extra: {}, frontier: {}, nodes: {} }
+  assert.deepEqual(decodePlan(encodePlan(plain)), plain)
+
+  const stacked = { ...plain, stack: 4 }
+  assert.deepEqual(decodePlan(encodePlan(stacked)), stacked)
+
+  // One is what a belt does on its own, so it is not worth a letter in the link.
+  assert.deepEqual(decodePlan(encodePlan({ ...plain, stack: 1 })), plain)
+})
 
 test('a plan survives the round trip through a link', () => {
   const plan = {
